@@ -11,7 +11,7 @@ Vite + React + TypeScript のプロジェクトを作り、`@cloudflare/vite-plu
 - `GET /api/health` が `{ "ok": true }` を返す
 - `wrangler.jsonc` に `RoomDO` が `new_sqlite_classes` で登録されている
 
-## [ ] 1. RoomDO と WebSocket 同期
+## [x] 1. RoomDO と WebSocket 同期
 
 ルームIDごとに `RoomDO` を作り、WebSocket（Hibernation API）で接続を受けてメッセージを全員に配信する。この時点ではゲームロジックは入れない。
 
