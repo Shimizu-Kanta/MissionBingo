@@ -192,10 +192,11 @@ fieldset label {
 .card-grid {
   display: grid;
   gap: 2px;
-  margin: 16px 0;
+  margin: 8px 0 16px;
 }
 
 .cell {
+  position: relative;
   aspect-ratio: 1;
   display: flex;
   align-items: center;
@@ -204,14 +205,169 @@ fieldset label {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--cell-bg);
-  font-size: clamp(0.5rem, 2.2vw, 0.85rem);
+  color: var(--fg);
+  font-size: clamp(0.5rem, 2.4vw, 0.85rem);
   line-height: 1.2;
   text-align: center;
   overflow: hidden;
   word-break: break-all;
 }
 
+.size-7 .cell {
+  font-size: clamp(0.45rem, 1.9vw, 0.8rem);
+}
+
+.size-9 .cell {
+  font-size: clamp(0.4rem, 1.5vw, 0.7rem);
+  border-radius: 2px;
+}
+
 .cell.free {
   font-weight: bold;
   color: var(--muted);
+}
+
+.cell.claimed {
+  border: 2px solid var(--team-color);
+  background: color-mix(in srgb, var(--team-color) 40%, var(--bg));
+  font-weight: bold;
+}
+
+.cell.pending {
+  border: 2px dashed var(--accent);
+}
+
+.cell-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 0.55rem;
+  background: var(--accent);
+  color: #fff;
+}
+
+.team-badge {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.25em;
+  border-radius: 50%;
+  vertical-align: -0.05em;
+}
+
+.team-name {
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  color: var(--warn);
+  font-size: 0.8rem;
+}
+
+button.danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+
+.standings {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.standings th,
+.standings td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.standings tr.mine {
+  font-weight: bold;
+}
+
+.queue,
+.timeline {
+  list-style: none;
+  padding: 0;
+}
+
+.queue-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-item p {
+  margin: 2px 0;
+}
+
+.queue-cell {
+  font-weight: bold;
+}
+
+.queue-comment {
+  white-space: pre-wrap;
+}
+
+.timeline {
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-item time {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.timeline-item.rejected {
+  color: var(--error);
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.4);
+  z-index: 10;
+}
+
+.sheet {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 16px 16px 24px;
+  border-radius: 12px 12px 0 0;
+  background: var(--bg);
+}
+
+.sheet h2 {
+  margin: 0 32px 8px 0;
+}
+
+.sheet-close {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  font-size: 1.2rem;
+}
+
+.sheet-detail {
+  white-space: pre-wrap;
 }

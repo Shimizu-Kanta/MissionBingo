@@ -21,6 +21,7 @@ export const TITLE_WARN_LENGTH = 10;
 export const MAX_TITLE_LENGTH = 25;
 export const MAX_DETAIL_LENGTH = 500;
 export const MAX_TASKS = 300;
+export const MAX_COMMENT_LENGTH = 200;
 
 // 見分けやすい色。チームID = 配列の添字
 export const TEAM_PRESETS = [
@@ -68,12 +69,36 @@ export type Participant = {
   role: Role;
 };
 
+// マスの取得。個別カードではチームごと、共有カードでは1マスにつき1チーム
+export type Claim = { teamId: number; position: number; claimedAt: number };
+
+// 申請中の申請（GMありのときだけ発生する）
+export type Application = {
+  id: number;
+  position: number;
+  teamId: number;
+  participantName: string;
+  comment: string;
+  createdAt: number;
+};
+
+// タイムラインの出来事。名前とタイトルは記録時点のものを持つ
+export type TimelineEvent =
+  | { kind: "applied"; teamId: number; participantName: string; position: number; title: string; comment: string }
+  | { kind: "approved"; teamId: number; position: number; title: string; byName: string }
+  | { kind: "rejected"; teamId: number; position: number; title: string; comment: string; auto: boolean }
+  | { kind: "claimed"; teamId: number; participantName: string; position: number; title: string; comment: string };
+export type TimelineEntry = { id: number; at: number; event: TimelineEvent };
+
 export type RoomState = {
   code: string;
   settings: RoomSettings;
   teams: Team[];
   participants: Participant[];
   card: Cell[]; // 個別カードでも全チーム同じ並び
+  claims: Claim[];
+  applications: Application[]; // 申請中のみ。古い順
+  timeline: TimelineEntry[]; // 古い順
 };
 
 // POST /api/rooms
@@ -89,7 +114,10 @@ export type CreateRoomResponse = { code: string };
 // クライアント → RoomDO
 export type ClientMessage =
   | { type: "hello"; token: string }
-  | { type: "join"; name: string; teamId: number };
+  | { type: "join"; name: string; teamId: number }
+  | { type: "apply"; position: number; comment: string }
+  | { type: "approve"; applicationId: number }
+  | { type: "reject"; applicationId: number; comment: string };
 
 // RoomDO → クライアント
 export type ServerMessage =
@@ -188,6 +216,60 @@ function parseCell(value: unknown): Cell | null {
   return { position: value.position, free: false, ...task };
 }
 
+export function normalizeComment(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const comment = value.trim();
+  return comment.length > 0 && charLength(comment) <= MAX_COMMENT_LENGTH ? comment : null;
+}
+
+function isTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+const isTeamId = (value: unknown): value is number => isInt(value, 0, MAX_TEAMS - 1);
+const isPosition = (value: unknown): value is number => isInt(value, 0, 80);
+const isId = (value: unknown): value is number => isInt(value, 1, Number.MAX_SAFE_INTEGER);
+
+function parseClaim(value: unknown): Claim | null {
+  if (!isRecord(value) || !isTeamId(value.teamId) || !isPosition(value.position) || !isTime(value.claimedAt)) return null;
+  return { teamId: value.teamId, position: value.position, claimedAt: value.claimedAt };
+}
+
+function parseApplication(value: unknown): Application | null {
+  if (!isRecord(value)) return null;
+  const { id, position, teamId, participantName, comment, createdAt } = value;
+  if (!isId(id) || !isPosition(position) || !isTeamId(teamId) || !isTime(createdAt)) return null;
+  if (typeof participantName !== "string" || typeof comment !== "string") return null;
+  return { id, position, teamId, participantName, comment, createdAt };
+}
+
+function parseTimelineEvent(value: unknown): TimelineEvent | null {
+  if (!isRecord(value)) return null;
+  const { teamId, position, title } = value;
+  if (!isTeamId(teamId) || !isPosition(position) || typeof title !== "string") return null;
+  switch (value.kind) {
+    case "applied":
+    case "claimed": {
+      const { participantName, comment } = value;
+      if (typeof participantName !== "string" || typeof comment !== "string") return null;
+      return { kind: value.kind, teamId, participantName, position, title, comment };
+    }
+    case "approved":
+      return typeof value.byName === "string" ? { kind: "approved", teamId, position, title, byName: value.byName } : null;
+    case "rejected":
+      if (typeof value.comment !== "string" || typeof value.auto !== "boolean") return null;
+      return { kind: "rejected", teamId, position, title, comment: value.comment, auto: value.auto };
+    default:
+      return null;
+  }
+}
+
+export function parseTimelineEntry(value: unknown): TimelineEntry | null {
+  if (!isRecord(value) || !isId(value.id) || !isTime(value.at)) return null;
+  const event = parseTimelineEvent(value.event);
+  return event ? { id: value.id, at: value.at, event } : null;
+}
+
 function parseRole(value: unknown): Role | null {
   return value === "gm" || value === "operator" || value === "player" ? value : null;
 }
@@ -223,8 +305,11 @@ function parseRoomState(value: unknown): RoomState | null {
   const teams = parseList(value.teams, parseTeam);
   const participants = parseList(value.participants, parseParticipant);
   const card = parseList(value.card, parseCell);
-  if (!settings || !teams || !participants || !card) return null;
-  return { code: value.code, settings, teams, participants, card };
+  const claims = parseList(value.claims, parseClaim);
+  const applications = parseList(value.applications, parseApplication);
+  const timeline = parseList(value.timeline, parseTimelineEntry);
+  if (!settings || !teams || !participants || !card || !claims || !applications || !timeline) return null;
+  return { code: value.code, settings, teams, participants, card, claims, applications, timeline };
 }
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest | null {
@@ -258,6 +343,18 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       // チーム数の上限チェックはルーム設定を知っている RoomDO 側で行う
       if (!name || !isInt(data.teamId, 0, MAX_TEAMS - 1)) return null;
       return { type: "join", name, teamId: data.teamId };
+    }
+    case "apply": {
+      const comment = normalizeComment(data.comment);
+      if (!isPosition(data.position) || !comment) return null;
+      return { type: "apply", position: data.position, comment };
+    }
+    case "approve":
+      return isId(data.applicationId) ? { type: "approve", applicationId: data.applicationId } : null;
+    case "reject": {
+      const comment = normalizeComment(data.comment);
+      if (!isId(data.applicationId) || !comment) return null;
+      return { type: "reject", applicationId: data.applicationId, comment };
     }
     default:
       return null;
