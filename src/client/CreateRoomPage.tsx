@@ -21,6 +21,7 @@ import {
   type CardMode,
   type CardSize,
   type CreateRoomRequest,
+  type QualityJudge,
   type TaskInput,
 } from "../shared/types";
 import { navigate } from "./navigation";
@@ -58,6 +59,7 @@ export function CreateRoomPage() {
   const [teamCount, setTeamCount] = useState(DEFAULT_TEAMS);
   const [targetBingo, setTargetBingo] = useState(DEFAULT_TARGET_BINGO);
   const [autoEnd, setAutoEnd] = useState(false);
+  const [qualityJudge, setQualityJudge] = useState<QualityJudge>("operator");
   const [teamId, setTeamId] = useState(0);
   const [rows, setRows] = useState<TaskRow[]>(() => [newRow()]);
   const [importMessages, setImportMessages] = useState<string[]>([]);
@@ -105,6 +107,7 @@ export function CreateRoomPage() {
         teamCount,
         targetBingo: target,
         autoEnd: cardMode === "shared" && autoEnd,
+        qualityJudge: cardMode === "shared" && !hasGm ? qualityJudge : "operator",
       },
       teamId: hasGm ? null : myTeamId,
       tasks,
@@ -218,6 +221,20 @@ export function CreateRoomPage() {
             <input type="checkbox" checked={autoEnd} onChange={(e) => setAutoEnd(e.target.checked)} />
             目標に届かず全マスが埋まったら自動で終了する
           </label>
+        )}
+
+        {cardMode === "shared" && !hasGm && (
+          <fieldset>
+            <legend>特別ミッション「質」の判定方法</legend>
+            <label>
+              <input type="radio" name="quality" checked={qualityJudge === "operator"} onChange={() => setQualityJudge("operator")} />
+              操作主が決める
+            </label>
+            <label>
+              <input type="radio" name="quality" checked={qualityJudge === "vote"} onChange={() => setQualityJudge("vote")} />
+              全員投票（1人1票・自チームには投票できない）
+            </label>
+          </fieldset>
         )}
       </section>
 

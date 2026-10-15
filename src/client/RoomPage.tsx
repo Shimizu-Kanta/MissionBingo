@@ -13,6 +13,7 @@ import { ApprovalQueue } from "./ApprovalQueue";
 import { Board } from "./Board";
 import { CellSheet } from "./CellSheet";
 import { MiniCard } from "./MiniCard";
+import { MissionPanel } from "./MissionPanel";
 import { navigate } from "./navigation";
 import { ReadOnlyCards } from "./ReadOnlyCards";
 import { ResultView } from "./ResultView";
@@ -128,6 +129,8 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
   const [tabTeamId, setTabTeamId] = useState(you.teamId ?? 0);
   const viewTeamId = individual ? (moderator ? tabTeamId : you.teamId) : you.teamId;
   const viewTeam = viewTeamId !== null ? room.teams[viewTeamId] : undefined;
+  const myRights = room.stealRights.filter((r) => r.teamId === you.teamId && r.usedAt === null);
+  const stealRight = myRights[0];
 
   return (
     <>
@@ -147,6 +150,12 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
 
       <Standings room={room} myTeamId={you.teamId} />
 
+      {stealRight && (
+        <p className="steal-banner" role="status">
+          特別ミッションで1位になりました！ 他チームのマスを1つ奪えます（残り {myRights.length} 回）。カードで光っているマスをタップしてください
+        </p>
+      )}
+
       {moderator && <EndGameButton onEnd={() => send({ type: "end" })} />}
 
       {you.role === "gm" && (
@@ -157,6 +166,8 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
         />
       )}
 
+      {!individual && <MissionPanel room={room} you={you} send={send} />}
+
       <section>
         {individual && moderator ? (
           <>
@@ -166,7 +177,7 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
         ) : (
           <h2>{individual && viewTeam ? `${viewTeam.name}のカード` : "共有カード"}</h2>
         )}
-        <Board room={room} viewTeamId={viewTeamId} onSelect={setSelected} />
+        <Board room={room} viewTeamId={viewTeamId} stealing={!!stealRight} onSelect={setSelected} />
         {moderator && <p className="hint">取得済みのマスをタップすると取り消せます</p>}
       </section>
 
@@ -197,6 +208,10 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
           viewTeamId={viewTeamId}
           canApply={you.teamId !== null && viewTeamId === you.teamId}
           canRevoke={moderator}
+          canSteal={!!stealRight}
+          onSteal={() => {
+            if (stealRight && send({ type: "steal", rightId: stealRight.id, position: selected })) closeSheet();
+          }}
           onApply={(comment) => {
             if (send({ type: "apply", position: selected, comment })) closeSheet();
           }}

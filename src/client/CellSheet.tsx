@@ -10,8 +10,10 @@ export function CellSheet({
   viewTeamId,
   canApply,
   canRevoke,
+  canSteal = false,
   onApply,
   onRevoke,
+  onSteal,
   onClose,
 }: {
   room: RoomState;
@@ -19,8 +21,10 @@ export function CellSheet({
   viewTeamId: number | null; // どのチームのカードとして見ているか
   canApply: boolean; // 自チームのカードを見ているプレイヤーだけ true
   canRevoke: boolean; // GM / 操作主だけ true
+  canSteal?: boolean; // 自チームに未使用の奪取権があるとき true
   onApply: (comment: string) => void;
   onRevoke: (teamId: number, reason: string) => void;
+  onSteal?: () => void;
   onClose: () => void;
 }) {
   const cell = room.card[position];
@@ -63,6 +67,13 @@ export function CellSheet({
             submitLabel={room.settings.hasGm ? "達成申請" : "達成申請（すぐに取得）"}
             onSubmit={onApply}
           />
+        )}
+        {canSteal && onSteal && status.kind === "claimed" && status.teamId !== viewTeamId && (
+          <p>
+            <button type="button" className="primary" onClick={onSteal}>
+              このマスを奪う
+            </button>
+          </p>
         )}
         {canRevoke && status.kind === "claimed" && (
           <CommentForm

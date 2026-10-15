@@ -23,6 +23,13 @@ export const MAX_DETAIL_LENGTH = 500;
 export const MAX_TASKS = 300;
 export const MAX_COMMENT_LENGTH = 200;
 
+export const MISSION_KINDS = ["speed", "quantity", "quality"] as const;
+export type MissionKind = (typeof MISSION_KINDS)[number];
+export const MAX_MISSION_TITLE_LENGTH = 50;
+export const MIN_MISSION_MINUTES = 1;
+export const MAX_MISSION_MINUTES = 60;
+export const MAX_MISSION_SCORE = 999;
+
 // 見分けやすい色。チームID = 配列の添字
 export const TEAM_PRESETS = [
   { name: "赤チーム", color: "#e53935" },
@@ -48,7 +55,10 @@ export type RoomSettings = {
   teamCount: number;
   targetBingo: number; // 1〜maxLines(cardSize)
   autoEnd: boolean; // 共有カードのみ。個別カードでは常に false
+  qualityJudge: QualityJudge; // 質タイプの判定方法。GMなし・共有カードのときだけ意味を持つ
 };
+
+export type QualityJudge = "operator" | "vote";
 
 // お題の候補（CSV / JSON の1行）
 export type TaskInput = {
@@ -91,8 +101,50 @@ export type TimelineEvent =
   | { kind: "revoked"; teamId: number; position: number; title: string; reason: string; byName: string }
   | { kind: "ended"; reason: "manual"; byName: string } // GM / 操作主が終了
   | { kind: "ended"; reason: "target"; teamId: number } // 目標ビンゴ数に到達
-  | { kind: "ended"; reason: "full" }; // 全マスが埋まった（共有カード・自動終了ON）
+  | { kind: "ended"; reason: "full" } // 全マスが埋まった（共有カード・自動終了ON）
+  | { kind: "missionStarted"; missionId: number; missionKind: MissionKind; title: string; minutes: number; byName: string }
+  | { kind: "missionSubmitted"; missionId: number; title: string; teamId: number; participantName: string; comment: string }
+  | { kind: "missionRejected"; missionId: number; title: string; teamId: number; comment: string; auto: boolean }
+  | { kind: "missionResult"; missionId: number; title: string; winnerTeamIds: number[] } // 勝者なしなら空
+  | { kind: "stolen"; teamId: number; fromTeamId: number; position: number; title: string };
 export type TimelineEntry = { id: number; at: number; event: TimelineEvent };
+
+// ---- 特別ミッション（共有カードのみ） ----
+
+// open：提出受付中（速さは時間切れ後も、時間内の提出の判定待ちなら open のまま）
+// judging：時間切れ後、GM / 操作主の判定待ち（量・質）
+// voting：時間切れ後、全員投票の受付中（GMなし・質・全員投票）
+export type MissionStatus = "open" | "judging" | "voting" | "done";
+
+export type MissionSubmission = {
+  id: number;
+  teamId: number;
+  participantName: string;
+  comment: string;
+  // pending / approved / rejected は速さ（GMあり）の判定。量・質は提出したら accepted
+  status: "pending" | "approved" | "rejected" | "accepted";
+  rejectComment: string | null;
+  createdAt: number;
+};
+
+// 量：GM / 操作主が入力した数。質の全員投票：得票数
+export type TeamScore = { teamId: number; value: number };
+
+export type Mission = {
+  id: number;
+  kind: MissionKind;
+  title: string;
+  startedAt: number;
+  endsAt: number;
+  status: MissionStatus;
+  submissions: MissionSubmission[];
+  voterIds: string[]; // 投票済みの参加者。誰に入れたかは done まで出さない
+  winnerTeamIds: number[];
+  scores: TeamScore[] | null; // done になってから出す
+};
+
+// 特別ミッションの1位が持つ「他チームのマスを1つ奪える」権利
+export type StealRight = { id: number; missionId: number; teamId: number; usedAt: number | null; position: number | null };
 
 export type RoomState = {
   code: string;
@@ -104,6 +156,8 @@ export type RoomState = {
   applications: Application[]; // 申請中のみ。古い順
   timeline: TimelineEntry[]; // 古い順
   endedAt: number | null; // 終了済みなら終了時刻
+  missions: Mission[]; // 古い順
+  stealRights: StealRight[];
 };
 
 // POST /api/rooms
@@ -124,7 +178,16 @@ export type ClientMessage =
   | { type: "approve"; applicationId: number }
   | { type: "reject"; applicationId: number; comment: string }
   | { type: "revoke"; teamId: number; position: number; reason: string }
-  | { type: "end" };
+  | { type: "end" }
+  | { type: "startMission"; kind: MissionKind; title: string; minutes: number }
+  | { type: "submitMission"; missionId: number; comment: string }
+  | { type: "approveMission"; submissionId: number }
+  | { type: "rejectMission"; submissionId: number; comment: string }
+  | { type: "scoreMission"; missionId: number; scores: TeamScore[] } // 量：各チームの数を入力
+  | { type: "pickWinners"; missionId: number; teamIds: number[] } // 質：GM / 操作主が1位を決める
+  | { type: "vote"; missionId: number; teamId: number }
+  | { type: "closeVoting"; missionId: number }
+  | { type: "steal"; rightId: number; position: number };
 
 // RoomDO → クライアント
 export type ServerMessage =
@@ -193,7 +256,19 @@ export function parseSettings(value: unknown): RoomSettings | null {
   if (cardMode !== "individual" && cardMode !== "shared") return null;
   if (!isInt(teamCount, MIN_TEAMS, MAX_TEAMS) || !isInt(targetBingo, 1, maxLines(cardSize))) return null;
   if (cardMode === "individual" && autoEnd) return null;
-  return { hasGm, cardMode, cardSize, free, teamCount, targetBingo, autoEnd };
+  const qualityJudge = value.qualityJudge ?? "operator";
+  if (qualityJudge !== "operator" && qualityJudge !== "vote") return null;
+  return { hasGm, cardMode, cardSize, free, teamCount, targetBingo, autoEnd, qualityJudge };
+}
+
+export function normalizeMissionTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const title = value.trim();
+  return title.length > 0 && charLength(title) <= MAX_MISSION_TITLE_LENGTH ? title : null;
+}
+
+function parseMissionKind(value: unknown): MissionKind | null {
+  return MISSION_KINDS.find((k) => k === value) ?? null;
 }
 
 export function normalizeTitle(value: unknown): string | null {
@@ -255,8 +330,38 @@ function parseApplication(value: unknown): Application | null {
   return { id, position, teamId, participantName, comment, createdAt };
 }
 
+function parseMissionEvent(value: Record<string, unknown>): TimelineEvent | null {
+  const { missionId, title } = value;
+  if (!isId(missionId) || typeof title !== "string") return null;
+  switch (value.kind) {
+    case "missionStarted": {
+      const missionKind = parseMissionKind(value.missionKind);
+      if (!missionKind || !isInt(value.minutes, MIN_MISSION_MINUTES, MAX_MISSION_MINUTES) || typeof value.byName !== "string") return null;
+      return { kind: "missionStarted", missionId, missionKind, title, minutes: value.minutes, byName: value.byName };
+    }
+    case "missionSubmitted":
+      if (!isTeamId(value.teamId) || typeof value.participantName !== "string" || typeof value.comment !== "string") return null;
+      return { kind: "missionSubmitted", missionId, title, teamId: value.teamId, participantName: value.participantName, comment: value.comment };
+    case "missionRejected":
+      if (!isTeamId(value.teamId) || typeof value.comment !== "string" || typeof value.auto !== "boolean") return null;
+      return { kind: "missionRejected", missionId, title, teamId: value.teamId, comment: value.comment, auto: value.auto };
+    case "missionResult": {
+      const winners = parseList(value.winnerTeamIds, (v) => (isTeamId(v) ? v : null));
+      return winners ? { kind: "missionResult", missionId, title, winnerTeamIds: winners } : null;
+    }
+    default:
+      return null;
+  }
+}
+
 function parseTimelineEvent(value: unknown): TimelineEvent | null {
   if (!isRecord(value)) return null;
+  if (typeof value.kind === "string" && value.kind.startsWith("mission")) return parseMissionEvent(value);
+  if (value.kind === "stolen") {
+    const { teamId, fromTeamId, position, title } = value;
+    if (!isTeamId(teamId) || !isTeamId(fromTeamId) || !isPosition(position) || typeof title !== "string") return null;
+    return { kind: "stolen", teamId, fromTeamId, position, title };
+  }
   if (value.kind === "ended") {
     if (value.reason === "target") return isTeamId(value.teamId) ? { kind: "ended", reason: "target", teamId: value.teamId } : null;
     if (value.reason === "full") return { kind: "ended", reason: "full" };
@@ -289,6 +394,46 @@ export function parseTimelineEntry(value: unknown): TimelineEntry | null {
   if (!isRecord(value) || !isId(value.id) || !isTime(value.at)) return null;
   const event = parseTimelineEvent(value.event);
   return event ? { id: value.id, at: value.at, event } : null;
+}
+
+function parseTeamScore(value: unknown): TeamScore | null {
+  if (!isRecord(value) || !isTeamId(value.teamId) || !isInt(value.value, 0, Number.MAX_SAFE_INTEGER)) return null;
+  return { teamId: value.teamId, value: value.value };
+}
+
+export function parseTeamScores(value: unknown): TeamScore[] | null {
+  return parseList(value, parseTeamScore);
+}
+
+function parseMissionSubmission(value: unknown): MissionSubmission | null {
+  if (!isRecord(value)) return null;
+  const { id, teamId, participantName, comment, status, rejectComment, createdAt } = value;
+  if (!isId(id) || !isTeamId(teamId) || typeof participantName !== "string" || typeof comment !== "string" || !isTime(createdAt)) return null;
+  if (status !== "pending" && status !== "approved" && status !== "rejected" && status !== "accepted") return null;
+  if (rejectComment !== null && typeof rejectComment !== "string") return null;
+  return { id, teamId, participantName, comment, status, rejectComment, createdAt };
+}
+
+function parseMission(value: unknown): Mission | null {
+  if (!isRecord(value)) return null;
+  const { id, title, startedAt, endsAt, status } = value;
+  const kind = parseMissionKind(value.kind);
+  if (!isId(id) || !kind || typeof title !== "string" || !isTime(startedAt) || !isTime(endsAt)) return null;
+  if (status !== "open" && status !== "judging" && status !== "voting" && status !== "done") return null;
+  const submissions = parseList(value.submissions, parseMissionSubmission);
+  const voterIds = parseList(value.voterIds, (v) => (typeof v === "string" ? v : null));
+  const winnerTeamIds = parseList(value.winnerTeamIds, (v) => (isTeamId(v) ? v : null));
+  const scores = value.scores === null ? null : parseTeamScores(value.scores);
+  if (!submissions || !voterIds || !winnerTeamIds || (value.scores !== null && !scores)) return null;
+  return { id, kind, title, startedAt, endsAt, status, submissions, voterIds, winnerTeamIds, scores };
+}
+
+function parseStealRight(value: unknown): StealRight | null {
+  if (!isRecord(value)) return null;
+  const { id, missionId, teamId, usedAt, position } = value;
+  if (!isId(id) || !isId(missionId) || !isTeamId(teamId)) return null;
+  if ((usedAt !== null && !isTime(usedAt)) || (position !== null && !isPosition(position))) return null;
+  return { id, missionId, teamId, usedAt, position };
 }
 
 function parseRole(value: unknown): Role | null {
@@ -329,9 +474,23 @@ function parseRoomState(value: unknown): RoomState | null {
   const claims = parseList(value.claims, parseClaim);
   const applications = parseList(value.applications, parseApplication);
   const timeline = parseList(value.timeline, parseTimelineEntry);
-  if (!settings || !teams || !participants || !card || !claims || !applications || !timeline) return null;
+  const missions = parseList(value.missions, parseMission);
+  const stealRights = parseList(value.stealRights, parseStealRight);
+  if (!settings || !teams || !participants || !card || !claims || !applications || !timeline || !missions || !stealRights) return null;
   if (value.endedAt !== null && !isTime(value.endedAt)) return null;
-  return { code: value.code, settings, teams, participants, card, claims, applications, timeline, endedAt: value.endedAt };
+  return {
+    code: value.code,
+    settings,
+    teams,
+    participants,
+    card,
+    claims,
+    applications,
+    timeline,
+    endedAt: value.endedAt,
+    missions,
+    stealRights,
+  };
 }
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest | null {
@@ -385,6 +544,40 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     }
     case "end":
       return { type: "end" };
+    case "startMission": {
+      const kind = parseMissionKind(data.kind);
+      const title = normalizeMissionTitle(data.title);
+      if (!kind || !title || !isInt(data.minutes, MIN_MISSION_MINUTES, MAX_MISSION_MINUTES)) return null;
+      return { type: "startMission", kind, title, minutes: data.minutes };
+    }
+    case "submitMission": {
+      const comment = normalizeComment(data.comment);
+      if (!isId(data.missionId) || !comment) return null;
+      return { type: "submitMission", missionId: data.missionId, comment };
+    }
+    case "approveMission":
+      return isId(data.submissionId) ? { type: "approveMission", submissionId: data.submissionId } : null;
+    case "rejectMission": {
+      const comment = normalizeComment(data.comment);
+      if (!isId(data.submissionId) || !comment) return null;
+      return { type: "rejectMission", submissionId: data.submissionId, comment };
+    }
+    case "scoreMission": {
+      const scores = parseTeamScores(data.scores);
+      if (!isId(data.missionId) || !scores || scores.some((s) => s.value > MAX_MISSION_SCORE)) return null;
+      return { type: "scoreMission", missionId: data.missionId, scores };
+    }
+    case "pickWinners": {
+      const teamIds = parseList(data.teamIds, (v) => (isTeamId(v) ? v : null));
+      if (!isId(data.missionId) || !teamIds || teamIds.length === 0 || new Set(teamIds).size !== teamIds.length) return null;
+      return { type: "pickWinners", missionId: data.missionId, teamIds };
+    }
+    case "vote":
+      return isId(data.missionId) && isTeamId(data.teamId) ? { type: "vote", missionId: data.missionId, teamId: data.teamId } : null;
+    case "closeVoting":
+      return isId(data.missionId) ? { type: "closeVoting", missionId: data.missionId } : null;
+    case "steal":
+      return isId(data.rightId) && isPosition(data.position) ? { type: "steal", rightId: data.rightId, position: data.position } : null;
     default:
       return null;
   }

@@ -21,6 +21,7 @@ import {
   type TimelineEvent,
 } from "../shared/types";
 import { computeStandings } from "../shared/game";
+import { MISSIONS_SCHEMA, Missions } from "./missions";
 import { shuffle } from "./random";
 
 // WebSocket に保存する情報（休止から復帰しても残る）
@@ -45,8 +46,11 @@ const AUTO_REJECT_COMMENT = "他のチームが先に承認されました";
 
 // 1ルーム = 1 RoomDO。ゲーム状態を変える処理はすべてここで行う。
 export class RoomDO extends DurableObject<Env> {
+  private readonly missions: Missions;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.missions = new Missions(this.ctx.storage.sql, (at, event) => this.addTimeline(at, event));
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS room (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -97,6 +101,7 @@ export class RoomDO extends DurableObject<Env> {
         event TEXT NOT NULL
       );
     `);
+    this.ctx.storage.sql.exec(MISSIONS_SCHEMA);
   }
 
   // Worker から RPC で呼ぶ。すでに作成済みのルームなら false（コードの衝突）。
@@ -151,14 +156,18 @@ export class RoomDO extends DurableObject<Env> {
       this.send(ws, { type: "error", reason: "不正なメッセージです" });
       return;
     }
-    const room = this.loadRoom();
-    if (!room) {
+    if (!this.loadRoom()) {
       this.send(ws, { type: "error", reason: "ルームが見つかりません" });
       ws.close(CLOSE_ROOM_NOT_FOUND, "room not found");
       return;
     }
+    // アラームの遅れに備えて、操作の前にも時間切れの特別ミッションを進めておく
+    const advanced = this.advanceMissions();
+    const room = this.loadRoom();
+    if (!room) return;
 
     if (message.type === "hello") {
+      if (advanced) this.broadcastState();
       const attachment: Attachment = { token: message.token };
       ws.serializeAttachment(attachment);
       this.sendState(ws, room);
@@ -178,9 +187,31 @@ export class RoomDO extends DurableObject<Env> {
     });
     if (error) {
       this.send(ws, { type: "error", reason: error });
+      if (advanced) this.broadcastState();
       return;
     }
     this.broadcastState();
+    await this.scheduleMissionAlarm();
+  }
+
+  // 特別ミッションの制限時間が来たら起きて、次の段階へ進める
+  async alarm(): Promise<void> {
+    this.advanceMissions();
+    await this.scheduleMissionAlarm();
+    this.broadcastState();
+  }
+
+  private advanceMissions(): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const room = this.loadRoom();
+      return room ? this.missions.advance(room, Date.now()) : false;
+    });
+  }
+
+  private async scheduleMissionAlarm(): Promise<void> {
+    const next = this.missions.nextDeadline(Date.now());
+    if (next === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(next);
   }
 
   private handleAction(token: string, room: RoomState, message: Exclude<ClientMessage, { type: "hello" }>): string | null {
@@ -200,6 +231,24 @@ export class RoomDO extends DurableObject<Env> {
         return this.revoke(you, room, message.teamId, message.position, message.reason);
       case "end":
         return this.end(you);
+      case "startMission":
+        return this.missions.start(you, room, message.kind, message.title, message.minutes, Date.now());
+      case "submitMission":
+        return this.missions.submit(you, room, message.missionId, message.comment, Date.now());
+      case "approveMission":
+        return this.missions.approve(you, room, message.submissionId, Date.now());
+      case "rejectMission":
+        return this.missions.reject(you, room, message.submissionId, message.comment, Date.now());
+      case "scoreMission":
+        return this.missions.score(you, room, message.missionId, message.scores, Date.now());
+      case "pickWinners":
+        return this.missions.pickWinners(you, room, message.missionId, message.teamIds, Date.now());
+      case "vote":
+        return this.missions.vote(you, room, message.missionId, message.teamId);
+      case "closeVoting":
+        return this.missions.closeVoting(you, room, message.missionId, Date.now());
+      case "steal":
+        return this.missions.steal(you, room, message.rightId, message.position, titleAt(room, message.position), Date.now());
     }
   }
 
@@ -384,6 +433,8 @@ export class RoomDO extends DurableObject<Env> {
       applications: this.loadPendingApplications(),
       timeline: this.loadTimeline(),
       endedAt: this.loadEndedAt(),
+      missions: this.missions.load(),
+      stealRights: this.missions.loadStealRights(),
     };
   }
 

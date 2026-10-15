@@ -6,10 +6,12 @@ import { cellStatus } from "./cellStatus";
 export function Board({
   room,
   viewTeamId,
+  stealing = false,
   onSelect,
 }: {
   room: RoomState;
   viewTeamId: number | null;
+  stealing?: boolean; // 奪取権があるとき、他チームのマスを強調する
   onSelect: (position: number) => void;
 }) {
   const size = room.settings.cardSize;
@@ -24,7 +26,7 @@ export function Board({
           <button
             key={cell.position}
             type="button"
-            className={`cell ${status.kind}`}
+            className={`cell ${status.kind}${stealing && status.kind === "claimed" && status.teamId !== viewTeamId ? " stealable" : ""}`}
             style={style}
             onClick={() => onSelect(cell.position)}
             aria-label={`${label}（${STATUS_LABEL[status.kind]}${team ? `・${team.name}` : ""}）`}
