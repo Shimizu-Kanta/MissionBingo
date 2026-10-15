@@ -8,7 +8,7 @@
 - フロント：Vite + React + TypeScript（`@cloudflare/vite-plugin` で Worker と同居）
 - API：Hono（Cloudflare Workers）
 - リアルタイム・ゲーム状態：Durable Objects（SQLite バックエンド、1ルーム = 1 `RoomDO`）
-- 画像：Cloudflare R2（ゲーム終了後3日でライフサイクルルールにより自動削除）
+- 画像：Cloudflare R2（ゲーム終了から24時間後に RoomDO のアラームで削除。保険としてライフサイクルルールでアップロードから7日後に削除）
 - 運用は Cloudflare 無料プランの範囲に収める前提
 
 ## ディレクトリ構成
