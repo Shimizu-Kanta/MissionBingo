@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { RoomState, TimelineEvent } from "../shared/types";
 import { formatTime } from "./format";
+import { Thumbs } from "./Images";
 import { MISSION_KIND_LABEL } from "./MissionPanel";
 import { TeamName } from "./TeamBadge";
 
@@ -17,7 +18,12 @@ export function Timeline({ room }: { room: RoomState }) {
           {entries.map((entry) => (
             <li key={entry.id} className={`timeline-item ${entry.event.kind}`}>
               <time>{formatTime(entry.at)}</time>
-              <span>{describe(room, entry.event)}</span>
+              <span>
+                {describe(room, entry.event)}
+                {"imageIds" in entry.event && (
+                  <Thumbs roomCode={room.code} imageIds={entry.event.imageIds} deleted={room.imagesDeletedAt !== null} />
+                )}
+              </span>
             </li>
           ))}
         </ol>
@@ -54,7 +60,8 @@ function describe(room: RoomState, event: TimelineEvent): ReactNode {
     case "missionSubmitted":
       return (
         <>
-          <TeamName team={room.teams[event.teamId]} /> {event.participantName} が特別ミッション「{event.title}」に提出：{event.comment}
+          <TeamName team={room.teams[event.teamId]} /> {event.participantName} が特別ミッション「{event.title}」に提出
+          {event.comment && `：${event.comment}`}
         </>
       );
     case "missionRejected":
@@ -96,13 +103,15 @@ function describe(room: RoomState, event: TimelineEvent): ReactNode {
     case "applied":
       return (
         <>
-          {team} {event.participantName} が「{event.title}」をチャットで申請：{event.comment}
+          {team} {event.participantName} が「{event.title}」を{event.imageIds.length > 0 ? "画像" : "チャット"}で申請
+          {event.comment && `：${event.comment}`}
         </>
       );
     case "claimed":
       return (
         <>
-          {team} {event.participantName} が「{event.title}」を達成：{event.comment}
+          {team} {event.participantName} が「{event.title}」を達成
+          {event.comment && `：${event.comment}`}
         </>
       );
     case "approved":

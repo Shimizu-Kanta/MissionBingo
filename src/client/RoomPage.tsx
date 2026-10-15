@@ -212,8 +212,8 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
           onSteal={() => {
             if (stealRight && send({ type: "steal", rightId: stealRight.id, position: selected })) closeSheet();
           }}
-          onApply={(comment) => {
-            if (send({ type: "apply", position: selected, comment })) closeSheet();
+          onApply={(comment, imageIds) => {
+            if (send({ type: "apply", position: selected, comment, imageIds })) closeSheet();
           }}
           onRevoke={(teamId, reason) => {
             if (send({ type: "revoke", teamId, position: selected, reason })) closeSheet();

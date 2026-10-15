@@ -12,5 +12,7 @@
     "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+  // 申請画像。ゲーム終了から24時間後に RoomDO が削除する（保険として、バケットにライフサイクルルール：アップロードから7日で削除）
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "mission-bingo-images" }],
   "observability": { "enabled": true }
 }

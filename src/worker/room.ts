@@ -1,7 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   CLOSE_ROOM_NOT_FOUND,
+  IMAGE_RETENTION_MS,
   isModerator,
+  maxImagesFor,
+  parseImageIds,
   parseClientMessage,
   parseSettings,
   parseTimelineEntry,
@@ -21,6 +24,17 @@ import {
   type TimelineEvent,
 } from "../shared/types";
 import { computeStandings } from "../shared/game";
+import {
+  IMAGES_SCHEMA,
+  deleteRoomImages,
+  loadImagesDeletedAt,
+  loadResultImages,
+  markApproved,
+  pickResultImages,
+  reserveUpload,
+  unmarkCell,
+  useUploads,
+} from "./images";
 import { MISSIONS_SCHEMA, Missions } from "./missions";
 import { shuffle } from "./random";
 
@@ -39,6 +53,7 @@ type ApplicationRow = {
   team_id: number;
   participant_name: string;
   comment: string;
+  images: string;
   created_at: number;
 };
 
@@ -80,6 +95,7 @@ export class RoomDO extends DurableObject<Env> {
         participant_id TEXT NOT NULL,
         participant_name TEXT NOT NULL,
         comment TEXT NOT NULL,
+        images TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL, -- pending / approved / rejected
         reject_comment TEXT,
         created_at INTEGER NOT NULL,
@@ -102,6 +118,19 @@ export class RoomDO extends DurableObject<Env> {
       );
     `);
     this.ctx.storage.sql.exec(MISSIONS_SCHEMA);
+    this.ctx.storage.sql.exec(IMAGES_SCHEMA);
+  }
+
+  // Worker から RPC で呼ぶ。参加者を確かめて画像のアップロード枠（画像 ID）を払い出す
+  reserveUpload(token: string): { imageId: string } | { error: string } {
+    const room = this.loadRoom();
+    if (!room) return { error: "ルームが見つかりません" };
+    if (room.endedAt !== null) return { error: "ゲームは終了しています" };
+    const you = this.findParticipantByToken(token);
+    if (!you) return { error: "ルームに参加していません" };
+    if (you.teamId === null) return { error: "GM は画像を送れません" };
+    const imageId = reserveUpload(this.ctx.storage.sql, you.id, Date.now());
+    return imageId ? { imageId } : { error: "送れる画像の枚数の上限に達しました" };
   }
 
   // Worker から RPC で呼ぶ。すでに作成済みのルームなら false（コードの衝突）。
@@ -191,14 +220,25 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     this.broadcastState();
-    await this.scheduleMissionAlarm();
+    await this.scheduleAlarm();
   }
 
-  // 特別ミッションの制限時間が来たら起きて、次の段階へ進める
+  // 特別ミッションの制限時間、またはゲーム終了から24時間後の画像削除のときに起きる
   async alarm(): Promise<void> {
     this.advanceMissions();
-    await this.scheduleMissionAlarm();
+    const room = this.loadRoom();
+    if (room && room.endedAt !== null && room.imagesDeletedAt === null && Date.now() >= room.endedAt + this.retentionMs()) {
+      await deleteRoomImages(this.env.IMAGES, room.code);
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO image_cleanup (id, deleted_at) VALUES (1, ?)", Date.now());
+    }
+    await this.scheduleAlarm();
     this.broadcastState();
+  }
+
+  // 画像の保存期間。開発時の動作確認だけ .dev.vars の IMAGE_RETENTION_MS で短くできる（本番では設定しない）
+  private retentionMs(): number {
+    const override = Number(Reflect.get(this.env, "IMAGE_RETENTION_MS"));
+    return Number.isFinite(override) && override > 0 ? override : IMAGE_RETENTION_MS;
   }
 
   private advanceMissions(): boolean {
@@ -208,8 +248,15 @@ export class RoomDO extends DurableObject<Env> {
     });
   }
 
-  private async scheduleMissionAlarm(): Promise<void> {
-    const next = this.missions.nextDeadline(Date.now());
+  // アラームは1つしか持てないので、終了後は画像の削除、プレイ中は次の特別ミッションの締切に合わせる
+  private async scheduleAlarm(): Promise<void> {
+    const room = this.loadRoom();
+    let next: number | null = null;
+    if (room && room.endedAt !== null) {
+      if (room.imagesDeletedAt === null) next = room.endedAt + this.retentionMs();
+    } else {
+      next = this.missions.nextDeadline(Date.now());
+    }
     if (next === null) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(next);
   }
@@ -222,7 +269,7 @@ export class RoomDO extends DurableObject<Env> {
     if (room.endedAt !== null) return "ゲームは終了しています";
     switch (message.type) {
       case "apply":
-        return this.apply(you, room, message.position, message.comment);
+        return this.apply(you, room, message.position, message.comment, message.imageIds);
       case "approve":
         return this.approve(you, room, message.applicationId);
       case "reject":
@@ -234,7 +281,7 @@ export class RoomDO extends DurableObject<Env> {
       case "startMission":
         return this.missions.start(you, room, message.kind, message.title, message.minutes, Date.now());
       case "submitMission":
-        return this.missions.submit(you, room, message.missionId, message.comment, Date.now());
+        return this.missions.submit(you, room, message.missionId, message.comment, message.imageIds, Date.now());
       case "approveMission":
         return this.missions.approve(you, room, message.submissionId, Date.now());
       case "rejectMission":
@@ -260,7 +307,7 @@ export class RoomDO extends DurableObject<Env> {
     return null;
   }
 
-  private apply(you: Participant, room: RoomState, position: number, comment: string): string | null {
+  private apply(you: Participant, room: RoomState, position: number, comment: string, imageIds: string[]): string | null {
     const teamId = you.teamId;
     if (teamId === null) return "GM は申請できません";
     const cell = room.card[position];
@@ -271,24 +318,30 @@ export class RoomDO extends DurableObject<Env> {
     const owner = room.claims.find((c) => c.position === position && (shared || c.teamId === teamId));
     if (owner) return owner.teamId === teamId ? "このマスはすでに取得済みです" : "他のチームが取得済みのマスには申請できません";
     if (room.applications.some((a) => a.position === position && a.teamId === teamId)) return "このマスはすでに申請中です";
+    if (cell.imageRequired && imageIds.length === 0) return "このお題は画像が必須です";
+    if (imageIds.length > maxImagesFor("cell")) return "画像は1枚までです";
 
     const now = Date.now();
+    const imageError = useUploads(this.ctx.storage.sql, you.id, imageIds, now);
+    if (imageError) return imageError;
     if (room.settings.hasGm) {
       this.ctx.storage.sql.exec(
-        `INSERT INTO applications (position, team_id, participant_id, participant_name, comment, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+        `INSERT INTO applications (position, team_id, participant_id, participant_name, comment, images, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
         position,
         teamId,
         you.id,
         you.name,
         comment,
+        JSON.stringify(imageIds),
         now,
       );
-      this.addTimeline(now, { kind: "applied", teamId, participantName: you.name, position, title: cell.title, comment });
+      this.addTimeline(now, { kind: "applied", teamId, participantName: you.name, position, title: cell.title, comment, imageIds });
     } else {
-      // GMなし：申請と同時に取得
+      // GMなし：申請と同時に取得（画像は承認済みとして扱う）
       this.insertClaim(teamId, position, now);
-      this.addTimeline(now, { kind: "claimed", teamId, participantName: you.name, position, title: cell.title, comment });
+      markApproved(this.ctx.storage.sql, teamId, imageIds, position);
+      this.addTimeline(now, { kind: "claimed", teamId, participantName: you.name, position, title: cell.title, comment, imageIds });
     }
     return null;
   }
@@ -306,6 +359,7 @@ export class RoomDO extends DurableObject<Env> {
     const now = Date.now();
     this.resolveApplication(app.id, "approved", null, now);
     this.insertClaim(app.teamId, app.position, now);
+    markApproved(this.ctx.storage.sql, app.teamId, app.imageIds, app.position);
     this.addTimeline(now, { kind: "approved", teamId: app.teamId, position: app.position, title, byName: you.name });
 
     // 共有カードでは、同じマスへの他チームの申請は却下扱いにする
@@ -349,6 +403,7 @@ export class RoomDO extends DurableObject<Env> {
     if (!room.claims.some((c) => c.teamId === teamId && c.position === position)) return "そのチームはこのマスを取得していません";
     const now = Date.now();
     this.ctx.storage.sql.exec("DELETE FROM claims WHERE team_id = ? AND position = ?", teamId, position);
+    unmarkCell(this.ctx.storage.sql, teamId, position);
     this.addTimeline(now, { kind: "revoked", teamId, position, title: titleAt(room, position), reason, byName: you.name });
     return null;
   }
@@ -378,6 +433,7 @@ export class RoomDO extends DurableObject<Env> {
   private markEnded(event: Extract<TimelineEvent, { kind: "ended" }>): void {
     const now = Date.now();
     this.ctx.storage.sql.exec("INSERT INTO game_status (id, ended_at) VALUES (1, ?)", now);
+    pickResultImages(this.ctx.storage.sql);
     this.addTimeline(now, event);
   }
 
@@ -435,6 +491,8 @@ export class RoomDO extends DurableObject<Env> {
       endedAt: this.loadEndedAt(),
       missions: this.missions.load(),
       stealRights: this.missions.loadStealRights(),
+      resultImages: loadResultImages(this.ctx.storage.sql),
+      imagesDeletedAt: loadImagesDeletedAt(this.ctx.storage.sql),
     };
   }
 
@@ -456,7 +514,7 @@ export class RoomDO extends DurableObject<Env> {
   private loadPendingApplications(): Application[] {
     return this.ctx.storage.sql
       .exec<ApplicationRow>(
-        "SELECT id, position, team_id, participant_name, comment, created_at FROM applications WHERE status = 'pending' ORDER BY id",
+        "SELECT id, position, team_id, participant_name, comment, images, created_at FROM applications WHERE status = 'pending' ORDER BY id",
       )
       .toArray()
       .map((r) => ({
@@ -465,6 +523,7 @@ export class RoomDO extends DurableObject<Env> {
         teamId: r.team_id,
         participantName: r.participant_name,
         comment: r.comment,
+        imageIds: storedImageIds(r.images),
         createdAt: r.created_at,
       }));
   }
@@ -548,6 +607,11 @@ function drawCard(settings: RoomSettings, tasks: TaskInput[]): Cell[] {
     if (settings.free && position === center) return { position, free: true };
     return { position, free: false, ...picked[next++] };
   });
+}
+
+export function storedImageIds(json: string): string[] {
+  const value: unknown = JSON.parse(json);
+  return parseImageIds(value) ?? [];
 }
 
 function titleAt(room: RoomState, position: number): string {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { MAX_COMMENT_LENGTH, normalizeComment, type RoomState } from "../shared/types";
+import { MAX_COMMENT_LENGTH, maxImagesFor, normalizeComment, type RoomState } from "../shared/types";
 import { cellStatus } from "./cellStatus";
+import { ImagePicker } from "./Images";
 import { TeamName } from "./TeamBadge";
 
 // マスの詳細シート：タイトル・詳細・状態・達成申請（GM / 操作主には取り消しも出す）
@@ -22,7 +23,7 @@ export function CellSheet({
   canApply: boolean; // 自チームのカードを見ているプレイヤーだけ true
   canRevoke: boolean; // GM / 操作主だけ true
   canSteal?: boolean; // 自チームに未使用の奪取権があるとき true
-  onApply: (comment: string) => void;
+  onApply: (comment: string, imageIds: string[]) => void;
   onRevoke: (teamId: number, reason: string) => void;
   onSteal?: () => void;
   onClose: () => void;
@@ -60,10 +61,10 @@ export function CellSheet({
           )}
         </p>
 
-        {canApply && status.kind === "open" && (
-          <CommentForm
-            label="コメント（必須）"
-            placeholder="何をしたか書いてください"
+        {canApply && status.kind === "open" && !cell.free && (
+          <ApplyForm
+            roomCode={room.code}
+            imageRequired={cell.imageRequired}
             submitLabel={room.settings.hasGm ? "達成申請" : "達成申請（すぐに取得）"}
             onSubmit={onApply}
           />
@@ -86,6 +87,51 @@ export function CellSheet({
         )}
       </section>
     </div>
+  );
+}
+
+// 申請フォーム。コメントは必須、ただし画像を付けたら任意
+export function ApplyForm({
+  roomCode,
+  imageRequired,
+  maxImages = maxImagesFor("cell"),
+  submitLabel,
+  onSubmit,
+}: {
+  roomCode: string;
+  imageRequired: boolean;
+  maxImages?: number;
+  submitLabel: string;
+  onSubmit: (comment: string, imageIds: string[]) => void;
+}) {
+  const [comment, setComment] = useState("");
+  const [imageIds, setImageIds] = useState<string[]>([]);
+  const normalized = normalizeComment(comment);
+  const hasImage = imageIds.length > 0;
+  const commentOk = normalized !== null || (hasImage && comment.trim() === "");
+  const canSubmit = commentOk && (!imageRequired || hasImage);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canSubmit) onSubmit(normalized ?? "", imageIds);
+      }}
+    >
+      <ImagePicker roomCode={roomCode} max={maxImages} required={imageRequired} value={imageIds} onChange={setImageIds} />
+      <label className="field">
+        コメント（{hasImage ? "任意" : "必須"}）
+        <textarea
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          maxLength={MAX_COMMENT_LENGTH}
+          rows={2}
+          placeholder="何をしたか書いてください"
+        />
+      </label>
+      <button type="submit" className="primary" disabled={!canSubmit}>
+        {submitLabel}
+      </button>
+    </form>
   );
 }
 

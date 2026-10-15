@@ -1,6 +1,8 @@
 // 特別ミッション（共有カードのみ）。状態の変更はすべて RoomDO のトランザクション内から呼ぶ
 import {
   isModerator,
+  maxImagesFor,
+  parseImageIds,
   parseTeamScores,
   type Mission,
   type MissionKind,
@@ -12,6 +14,7 @@ import {
   type TeamScore,
   type TimelineEvent,
 } from "../shared/types";
+import { markApproved, useUploads } from "./images";
 
 export const MISSIONS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS missions (
@@ -31,6 +34,7 @@ export const MISSIONS_SCHEMA = `
     participant_id TEXT NOT NULL,
     participant_name TEXT NOT NULL,
     comment TEXT NOT NULL,
+    images TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     reject_comment TEXT,
     created_at INTEGER NOT NULL
@@ -69,6 +73,7 @@ type SubmissionRow = {
   team_id: number;
   participant_name: string;
   comment: string;
+  images: string;
   status: string;
   reject_comment: string | null;
   created_at: number;
@@ -83,7 +88,7 @@ export class Missions {
   load(): Mission[] {
     const submissions = this.sql
       .exec<SubmissionRow>(
-        "SELECT id, mission_id, team_id, participant_name, comment, status, reject_comment, created_at FROM mission_submissions ORDER BY id",
+        "SELECT id, mission_id, team_id, participant_name, comment, images, status, reject_comment, created_at FROM mission_submissions ORDER BY id",
       )
       .toArray();
     const votes = this.sql.exec<{ mission_id: number; participant_id: string }>("SELECT mission_id, participant_id FROM mission_votes").toArray();
@@ -172,7 +177,7 @@ export class Missions {
     return null;
   }
 
-  submit(you: Participant, room: RoomState, missionId: number, comment: string, now: number): string | null {
+  submit(you: Participant, room: RoomState, missionId: number, comment: string, imageIds: string[], now: number): string | null {
     const teamId = you.teamId;
     if (teamId === null) return "GM は提出できません";
     const m = room.missions.find((x) => x.id === missionId);
@@ -181,22 +186,30 @@ export class Missions {
     const mine = m.submissions.filter((s) => s.teamId === teamId);
     if (m.kind === "speed" && mine.some((s) => s.status === "pending")) return "確認待ちの提出があります";
     if (m.kind === "quality" && mine.length > 0) return "このミッションにはすでに提出しています";
+    if (m.kind === "quality" && imageIds.length === 0) return "質のミッションは画像が必須です";
+    if (imageIds.length > maxImagesFor(m.kind)) return `画像は${maxImagesFor(m.kind)}枚までです`;
+    const imageError = useUploads(this.sql, you.id, imageIds, now);
+    if (imageError) return imageError;
 
     // 速さ：GMあり は判定待ち、GMなし は通常のマスと同じく提出した時点で勝ち。量・質は受け付けるだけ
     const status = m.kind === "speed" ? (room.settings.hasGm ? "pending" : "approved") : "accepted";
     this.sql.exec(
-      `INSERT INTO mission_submissions (mission_id, team_id, participant_id, participant_name, comment, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mission_submissions (mission_id, team_id, participant_id, participant_name, comment, images, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       m.id,
       teamId,
       you.id,
       you.name,
       comment,
+      JSON.stringify(imageIds),
       status,
       now,
     );
-    this.addTimeline(now, { kind: "missionSubmitted", missionId: m.id, title: m.title, teamId, participantName: you.name, comment });
-    if (status === "approved") this.finish(m, [teamId], null, now);
+    this.addTimeline(now, { kind: "missionSubmitted", missionId: m.id, title: m.title, teamId, participantName: you.name, comment, imageIds });
+    if (status === "approved") {
+      markApproved(this.sql, teamId, imageIds, null);
+      this.finish(m, [teamId], null, now);
+    }
     return null;
   }
 
@@ -206,6 +219,7 @@ export class Missions {
     if (!found || found.submission.status !== "pending" || found.mission.status !== "open") return "提出が見つからないか、すでに処理されています";
     const { mission, submission } = found;
     this.setSubmission(submission.id, "approved", null);
+    markApproved(this.sql, submission.teamId, submission.imageIds, null);
     // 最初に許可された提出で決まり。他の判定待ちは却下扱い
     for (const other of mission.submissions) {
       if (other.id === submission.id || other.status !== "pending") continue;
@@ -336,6 +350,11 @@ function topTeams(scores: TeamScore[]): number[] {
   return max === 0 ? [] : scores.filter((s) => s.value === max).map((s) => s.teamId);
 }
 
+function parseStoredIds(json: string): string[] {
+  const value: unknown = JSON.parse(json);
+  return parseImageIds(value) ?? [];
+}
+
 function toKind(value: string): MissionKind {
   return value === "quantity" || value === "quality" ? value : "speed";
 }
@@ -351,6 +370,7 @@ function toSubmission(r: SubmissionRow): MissionSubmission {
     teamId: r.team_id,
     participantName: r.participant_name,
     comment: r.comment,
+    imageIds: parseStoredIds(r.images),
     status,
     rejectComment: r.reject_comment,
     createdAt: r.created_at,

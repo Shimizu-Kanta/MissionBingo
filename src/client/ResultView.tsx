@@ -1,5 +1,5 @@
 import { computeStandings } from "../shared/game";
-import type { Participant, RoomState } from "../shared/types";
+import { imageUrl, type Participant, type RoomState } from "../shared/types";
 import { Standings } from "./Standings";
 import { TeamName } from "./TeamBadge";
 import { Timeline, describeEnding } from "./Timeline";
@@ -25,6 +25,28 @@ export function ResultView({ room, you, onShowCards }: { room: RoomState; you: P
       </p>
 
       <Standings room={room} myTeamId={you?.teamId ?? null} />
+
+      {room.resultImages.length > 0 && (
+        <section>
+          <h2>各チームの1枚</h2>
+          {room.imagesDeletedAt !== null ? (
+            <p className="hint">画像は保存期間（ゲーム終了から24時間）を過ぎたため削除されました</p>
+          ) : (
+            <div className="result-images">
+              {room.resultImages.map((r) => (
+                <figure key={r.teamId}>
+                  <a href={imageUrl(room.code, r.imageId)} target="_blank" rel="noreferrer">
+                    <img src={imageUrl(room.code, r.imageId)} alt={`${room.teams[r.teamId]?.name ?? ""}の画像`} />
+                  </a>
+                  <figcaption>
+                    <TeamName team={room.teams[r.teamId]} />
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <p>
         <button type="button" className="primary" onClick={onShowCards}>

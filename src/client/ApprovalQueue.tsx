@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MAX_COMMENT_LENGTH, normalizeComment, type Application, type RoomState } from "../shared/types";
 import { formatTime } from "./format";
+import { Thumbs } from "./Images";
 import { TeamName } from "./TeamBadge";
 
 // GM の承認画面。申請時刻の古い順に、許可 / 却下（コメント必須）だけを置く
@@ -51,7 +52,8 @@ function ApprovalItem({
         <time>{formatTime(app.createdAt)}</time> <TeamName team={room.teams[app.teamId]} /> {app.participantName}
       </p>
       <p className="queue-cell">「{cell && !cell.free ? cell.title : "?"}」</p>
-      <p className="queue-comment">{app.comment}</p>
+      {app.comment && <p className="queue-comment">{app.comment}</p>}
+      <Thumbs roomCode={room.code} imageIds={app.imageIds} deleted={room.imagesDeletedAt !== null} />
       {rejecting ? (
         <form
           onSubmit={(e) => {

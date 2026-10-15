@@ -541,3 +541,61 @@ button.danger {
   outline: 3px solid var(--accent);
   outline-offset: -3px;
 }
+
+.field-label {
+  margin: 8px 0 4px;
+}
+
+.image-picker {
+  margin: 8px 0;
+}
+
+.thumbs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+  vertical-align: middle;
+}
+
+.thumbs img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.timeline .thumbs img {
+  width: 48px;
+  height: 48px;
+}
+
+.thumb-edit {
+  position: relative;
+}
+
+.thumb-edit button {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  color: #fff;
+  text-shadow: 0 0 3px #000;
+}
+
+.result-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.result-images figure {
+  margin: 0;
+}
+
+.result-images img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+}

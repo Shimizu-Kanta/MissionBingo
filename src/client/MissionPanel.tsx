@@ -7,6 +7,7 @@ import {
   MIN_MISSION_MINUTES,
   MISSION_KINDS,
   isModerator,
+  maxImagesFor,
   normalizeComment,
   normalizeMissionTitle,
   type ClientMessage,
@@ -15,7 +16,9 @@ import {
   type Participant,
   type RoomState,
 } from "../shared/types";
+import { ApplyForm } from "./CellSheet";
 import { formatTime } from "./format";
+import { Thumbs } from "./Images";
 import { TeamName } from "./TeamBadge";
 
 export const MISSION_KIND_LABEL: Record<MissionKind, string> = { speed: "速さ", quantity: "量", quality: "質" };
@@ -145,7 +148,9 @@ function MissionCard({ room, you, mission: m, now, send }: { room: RoomState; yo
         <ul className="mission-subs">
           {m.submissions.map((s) => (
             <li key={s.id}>
-              <time>{formatTime(s.createdAt)}</time> <TeamName team={room.teams[s.teamId]} /> {s.participantName}：{s.comment}
+              <time>{formatTime(s.createdAt)}</time> <TeamName team={room.teams[s.teamId]} /> {s.participantName}
+              {s.comment && `：${s.comment}`}
+              <Thumbs roomCode={room.code} imageIds={s.imageIds} deleted={room.imagesDeletedAt !== null} />
               {s.status === "pending" && <span className="tag">確認待ち</span>}
               {s.status === "rejected" && <span className="error">（却下：{s.rejectComment}）</span>}
               {s.status === "approved" && <strong>（許可）</strong>}
@@ -155,7 +160,16 @@ function MissionCard({ room, you, mission: m, now, send }: { room: RoomState; yo
         </ul>
       )}
 
-      {canSubmit && <SubmitForm missionId={m.id} send={send} />}
+      {canSubmit && (
+        <ApplyForm
+          key={m.submissions.length}
+          roomCode={room.code}
+          imageRequired={m.kind === "quality"}
+          maxImages={maxImagesFor(m.kind)}
+          submitLabel="提出する"
+          onSubmit={(comment, imageIds) => send({ type: "submitMission", missionId: m.id, comment, imageIds })}
+        />
+      )}
       {isModerator(you) && m.status === "judging" && m.kind === "quantity" && <ScoreForm room={room} mission={m} send={send} />}
       {isModerator(you) && m.status === "judging" && m.kind === "quality" && <PickWinnersForm room={room} mission={m} send={send} />}
       {m.status === "voting" && <VoteForm room={room} you={you} mission={m} send={send} />}
@@ -202,30 +216,6 @@ function MissionResultView({ room, mission: m }: { room: RoomState; mission: Mis
         </p>
       )}
     </>
-  );
-}
-
-function SubmitForm({ missionId, send }: { missionId: number; send: Send }) {
-  const [comment, setComment] = useState("");
-  const normalized = normalizeComment(comment);
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (normalized && send({ type: "submitMission", missionId, comment: normalized })) setComment("");
-      }}
-    >
-      <input
-        value={comment}
-        onChange={(e) => setComment(e.target.value)}
-        maxLength={MAX_COMMENT_LENGTH}
-        placeholder="提出するコメント（必須）"
-        aria-label="提出するコメント"
-      />
-      <button type="submit" className="primary" disabled={!normalized}>
-        提出する
-      </button>
-    </form>
   );
 }
 
