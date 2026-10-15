@@ -87,7 +87,9 @@ export type TimelineEvent =
   | { kind: "applied"; teamId: number; participantName: string; position: number; title: string; comment: string }
   | { kind: "approved"; teamId: number; position: number; title: string; byName: string }
   | { kind: "rejected"; teamId: number; position: number; title: string; comment: string; auto: boolean }
-  | { kind: "claimed"; teamId: number; participantName: string; position: number; title: string; comment: string };
+  | { kind: "claimed"; teamId: number; participantName: string; position: number; title: string; comment: string }
+  | { kind: "revoked"; teamId: number; position: number; title: string; reason: string; byName: string }
+  | { kind: "ended"; byName: string };
 export type TimelineEntry = { id: number; at: number; event: TimelineEvent };
 
 export type RoomState = {
@@ -99,6 +101,7 @@ export type RoomState = {
   claims: Claim[];
   applications: Application[]; // 申請中のみ。古い順
   timeline: TimelineEntry[]; // 古い順
+  endedAt: number | null; // 終了済みなら終了時刻
 };
 
 // POST /api/rooms
@@ -117,12 +120,19 @@ export type ClientMessage =
   | { type: "join"; name: string; teamId: number }
   | { type: "apply"; position: number; comment: string }
   | { type: "approve"; applicationId: number }
-  | { type: "reject"; applicationId: number; comment: string };
+  | { type: "reject"; applicationId: number; comment: string }
+  | { type: "revoke"; teamId: number; position: number; reason: string }
+  | { type: "end" };
 
 // RoomDO → クライアント
 export type ServerMessage =
   | { type: "state"; room: RoomState; you: Participant | null }
   | { type: "error"; reason: string };
+
+// GM、または GMなしのときの操作主。取り消し・終了・全チームのカード閲覧ができる
+export function isModerator(participant: Participant): boolean {
+  return participant.role === "gm" || participant.role === "operator";
+}
 
 // ルームが存在しないときに RoomDO が WebSocket を閉じるコード
 export const CLOSE_ROOM_NOT_FOUND = 4404;
@@ -245,6 +255,8 @@ function parseApplication(value: unknown): Application | null {
 
 function parseTimelineEvent(value: unknown): TimelineEvent | null {
   if (!isRecord(value)) return null;
+  if (value.kind === "ended") return typeof value.byName === "string" ? { kind: "ended", byName: value.byName } : null;
+
   const { teamId, position, title } = value;
   if (!isTeamId(teamId) || !isPosition(position) || typeof title !== "string") return null;
   switch (value.kind) {
@@ -259,6 +271,9 @@ function parseTimelineEvent(value: unknown): TimelineEvent | null {
     case "rejected":
       if (typeof value.comment !== "string" || typeof value.auto !== "boolean") return null;
       return { kind: "rejected", teamId, position, title, comment: value.comment, auto: value.auto };
+    case "revoked":
+      if (typeof value.reason !== "string" || typeof value.byName !== "string") return null;
+      return { kind: "revoked", teamId, position, title, reason: value.reason, byName: value.byName };
     default:
       return null;
   }
@@ -309,7 +324,8 @@ function parseRoomState(value: unknown): RoomState | null {
   const applications = parseList(value.applications, parseApplication);
   const timeline = parseList(value.timeline, parseTimelineEntry);
   if (!settings || !teams || !participants || !card || !claims || !applications || !timeline) return null;
-  return { code: value.code, settings, teams, participants, card, claims, applications, timeline };
+  if (value.endedAt !== null && !isTime(value.endedAt)) return null;
+  return { code: value.code, settings, teams, participants, card, claims, applications, timeline, endedAt: value.endedAt };
 }
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest | null {
@@ -356,6 +372,13 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (!isId(data.applicationId) || !comment) return null;
       return { type: "reject", applicationId: data.applicationId, comment };
     }
+    case "revoke": {
+      const reason = normalizeComment(data.reason);
+      if (!isTeamId(data.teamId) || !isPosition(data.position) || !reason) return null;
+      return { type: "revoke", teamId: data.teamId, position: data.position, reason };
+    }
+    case "end":
+      return { type: "end" };
     default:
       return null;
   }

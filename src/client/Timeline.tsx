@@ -26,8 +26,15 @@ export function Timeline({ room }: { room: RoomState }) {
 }
 
 function describe(room: RoomState, event: TimelineEvent): ReactNode {
+  if (event.kind === "ended") return <>{event.byName} がゲームを終了しました</>;
   const team = <TeamName team={room.teams[event.teamId]} />;
   switch (event.kind) {
+    case "revoked":
+      return (
+        <>
+          {team} の「{event.title}」を {event.byName} が取り消し：{event.reason}
+        </>
+      );
     case "applied":
       return (
         <>

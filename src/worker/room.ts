@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   CLOSE_ROOM_NOT_FOUND,
+  isModerator,
   parseClientMessage,
   parseSettings,
   parseTimelineEntry,
@@ -84,6 +85,10 @@ export class RoomDO extends DurableObject<Env> {
         position INTEGER NOT NULL,
         claimed_at INTEGER NOT NULL,
         PRIMARY KEY (team_id, position)
+      );
+      CREATE TABLE IF NOT EXISTS game_status (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        ended_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS timeline (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +182,8 @@ export class RoomDO extends DurableObject<Env> {
     const you = this.findParticipantByToken(token);
     if (message.type === "join") return this.join(token, you, room, message.name, message.teamId);
     if (!you) return "ルームに参加していません";
+    // 終了後はゲーム状態を変える操作を一切受け付けない
+    if (room.endedAt !== null) return "ゲームは終了しています";
     switch (message.type) {
       case "apply":
         return this.apply(you, room, message.position, message.comment);
@@ -184,6 +191,10 @@ export class RoomDO extends DurableObject<Env> {
         return this.approve(you, room, message.applicationId);
       case "reject":
         return this.reject(you, room, message.applicationId, message.comment);
+      case "revoke":
+        return this.revoke(you, room, message.teamId, message.position, message.reason);
+      case "end":
+        return this.end(you);
     }
   }
 
@@ -278,6 +289,24 @@ export class RoomDO extends DurableObject<Env> {
     return null;
   }
 
+  // 取り消しはビンゴ成立に関係なく行う。取り消したマスには再挑戦できる
+  private revoke(you: Participant, room: RoomState, teamId: number, position: number, reason: string): string | null {
+    if (!isModerator(you)) return "取り消しできるのは GM（GMなしのときは操作主）だけです";
+    if (!room.claims.some((c) => c.teamId === teamId && c.position === position)) return "そのチームはこのマスを取得していません";
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM claims WHERE team_id = ? AND position = ?", teamId, position);
+    this.addTimeline(now, { kind: "revoked", teamId, position, title: titleAt(room, position), reason, byName: you.name });
+    return null;
+  }
+
+  private end(you: Participant): string | null {
+    if (!isModerator(you)) return "ゲームを終了できるのは GM（GMなしのときは操作主）だけです";
+    const now = Date.now();
+    this.ctx.storage.sql.exec("INSERT INTO game_status (id, ended_at) VALUES (1, ?)", now);
+    this.addTimeline(now, { kind: "ended", byName: you.name });
+    return null;
+  }
+
   private insertClaim(teamId: number, position: number, at: number): void {
     this.ctx.storage.sql.exec("INSERT INTO claims (team_id, position, claimed_at) VALUES (?, ?, ?)", teamId, position, at);
   }
@@ -329,7 +358,13 @@ export class RoomDO extends DurableObject<Env> {
       claims: this.loadClaims(),
       applications: this.loadPendingApplications(),
       timeline: this.loadTimeline(),
+      endedAt: this.loadEndedAt(),
     };
+  }
+
+  private loadEndedAt(): number | null {
+    const row = this.ctx.storage.sql.exec<{ ended_at: number }>("SELECT ended_at FROM game_status WHERE id = 1").toArray()[0];
+    return row ? row.ended_at : null;
   }
 
   private loadClaims(): Claim[] {
