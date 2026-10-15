@@ -1,130 +1,69 @@
-import type { ReactNode } from "react";
-import type { RoomState, TimelineEvent } from "../shared/types";
-import { formatTime } from "./format";
-import { Thumbs } from "./Images";
-import { MISSION_KIND_LABEL } from "./MissionPanel";
-import { TeamName } from "./TeamBadge";
+import { imageUrl, type RoomState } from "../shared/types";
+import { KIND_STYLE, describeEvent } from "./derive";
+import { c1, formatClock } from "./theme";
 
-// 全員が見られる出来事の一覧。新しいものを上に出す
-export function Timeline({ room }: { room: RoomState }) {
+// 全員に公開するタイムライン。新しいものを上に出す
+export function Timeline({ room, maxHeight }: { room: RoomState; maxHeight?: string }) {
   const entries = [...room.timeline].reverse();
+  const deleted = room.imagesDeletedAt !== null;
   return (
-    <section>
-      <h2>タイムライン</h2>
-      {entries.length === 0 ? (
-        <p className="hint">まだ出来事はありません</p>
-      ) : (
-        <ol className="timeline">
-          {entries.map((entry) => (
-            <li key={entry.id} className={`timeline-item ${entry.event.kind}`}>
-              <time>{formatTime(entry.at)}</time>
-              <span>
-                {describe(room, entry.event)}
-                {"imageIds" in entry.event && (
-                  <Thumbs roomCode={room.code} imageIds={entry.event.imageIds} deleted={room.imagesDeletedAt !== null} />
+    <section className="side-panel" aria-label="タイムライン">
+      <div className="head">
+        <b>タイムライン</b>
+        <span className="note">全員に公開</span>
+      </div>
+      <div className="timeline" style={{ maxHeight }}>
+        {entries.length === 0 && <p className="empty">まだ出来事はありません</p>}
+        {entries.map((entry) => {
+          const v = describeEvent(room, entry.event);
+          const kind = KIND_STYLE[v.kind];
+          const team = v.teamId !== null ? room.teams[v.teamId] : undefined;
+          return (
+            <div key={entry.id} className="tl-item">
+              <time>{formatClock(entry.at)}</time>
+              <div className="body">
+                <div className="kind">
+                  <span className="label" style={{ background: kind.bg, color: kind.fg }}>
+                    {kind.label}
+                  </span>
+                  {team && <span className="team-dot" style={{ width: 8, height: 8, background: c1(team.hue) }} />}
+                </div>
+                <div className="text">{v.text}</div>
+                {v.note && (
+                  <div
+                    className="note"
+                    style={
+                      v.note.tone === "reason"
+                        ? { background: "oklch(0.95 0.04 70)", color: "oklch(0.4 0.09 70)" }
+                        : { background: "oklch(0.96 0.02 25)", color: "oklch(0.4 0.1 25)" }
+                    }
+                  >
+                    {v.note.label}
+                    {v.note.text}
+                  </div>
                 )}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
+                {v.chat && (
+                  <div className="note" style={{ background: "oklch(0.96 0.004 250)" }}>
+                    {v.chat}
+                  </div>
+                )}
+                {v.imageIds.length > 0 &&
+                  (deleted ? (
+                    <span className="photo-gone">画像は保存期間を過ぎたため削除されました</span>
+                  ) : (
+                    <div className="photos">
+                      {v.imageIds.map((id) => (
+                        <a key={id} href={imageUrl(room.code, id)} target="_blank" rel="noreferrer">
+                          <img src={imageUrl(room.code, id)} alt="申請の写真" loading="lazy" />
+                        </a>
+                      ))}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
-}
-
-export function describeEnding(room: RoomState, event: Extract<TimelineEvent, { kind: "ended" }>): ReactNode {
-  switch (event.reason) {
-    case "manual":
-      return <>{event.byName} がゲームを終了しました</>;
-    case "target":
-      return (
-        <>
-          <TeamName team={room.teams[event.teamId]} /> が目標の {room.settings.targetBingo} ビンゴに到達し、ゲームが終了しました
-        </>
-      );
-    case "full":
-      return <>全マスが埋まったため、ゲームが終了しました</>;
-  }
-}
-
-function describe(room: RoomState, event: TimelineEvent): ReactNode {
-  switch (event.kind) {
-    case "ended":
-      return describeEnding(room, event);
-    case "missionStarted":
-      return (
-        <>
-          特別ミッション（{MISSION_KIND_LABEL[event.missionKind]}・{event.minutes}分）発生：「{event.title}」
-        </>
-      );
-    case "missionSubmitted":
-      return (
-        <>
-          <TeamName team={room.teams[event.teamId]} /> {event.participantName} が特別ミッション「{event.title}」に提出
-          {event.comment && `：${event.comment}`}
-        </>
-      );
-    case "missionRejected":
-      return (
-        <>
-          <TeamName team={room.teams[event.teamId]} /> の特別ミッション「{event.title}」への提出が却下{event.auto ? "（自動）" : ""}：{event.comment}
-        </>
-      );
-    case "missionResult":
-      return event.winnerTeamIds.length === 0 ? (
-        <>特別ミッション「{event.title}」は1位なしで終了</>
-      ) : (
-        <>
-          特別ミッション「{event.title}」の1位：
-          {event.winnerTeamIds.map((id, i) => (
-            <span key={id}>
-              {i > 0 && "・"}
-              <TeamName team={room.teams[id]} />
-            </span>
-          ))}
-          （マスを1つ奪えます）
-        </>
-      );
-    case "stolen":
-      return (
-        <>
-          <TeamName team={room.teams[event.teamId]} /> が <TeamName team={room.teams[event.fromTeamId]} /> から「{event.title}」を奪取
-        </>
-      );
-  }
-  const team = <TeamName team={room.teams[event.teamId]} />;
-  switch (event.kind) {
-    case "revoked":
-      return (
-        <>
-          {team} の「{event.title}」を {event.byName} が取り消し：{event.reason}
-        </>
-      );
-    case "applied":
-      return (
-        <>
-          {team} {event.participantName} が「{event.title}」を{event.imageIds.length > 0 ? "画像" : "チャット"}で申請
-          {event.comment && `：${event.comment}`}
-        </>
-      );
-    case "claimed":
-      return (
-        <>
-          {team} {event.participantName} が「{event.title}」を達成
-          {event.comment && `：${event.comment}`}
-        </>
-      );
-    case "approved":
-      return (
-        <>
-          {team} の「{event.title}」を {event.byName} が許可
-        </>
-      );
-    case "rejected":
-      return (
-        <>
-          {team} の「{event.title}」が却下{event.auto ? "（自動）" : ""}：{event.comment}
-        </>
-      );
-  }
 }

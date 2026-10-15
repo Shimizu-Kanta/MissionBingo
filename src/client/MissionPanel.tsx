@@ -1,14 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
-  MAX_COMMENT_LENGTH,
-  MAX_MISSION_MINUTES,
   MAX_MISSION_SCORE,
   MAX_MISSION_TITLE_LENGTH,
-  MIN_MISSION_MINUTES,
   MISSION_KINDS,
+  imageUrl,
   isModerator,
-  maxImagesFor,
-  normalizeComment,
   normalizeMissionTitle,
   type ClientMessage,
   type Mission,
@@ -16,349 +12,313 @@ import {
   type Participant,
   type RoomState,
 } from "../shared/types";
-import { ApplyForm } from "./CellSheet";
-import { formatTime } from "./format";
-import { Thumbs } from "./Images";
-import { TeamName } from "./TeamBadge";
-
-export const MISSION_KIND_LABEL: Record<MissionKind, string> = { speed: "速さ", quantity: "量", quality: "質" };
-
-const KIND_HINT: Record<MissionKind, string> = {
-  speed: "最初に認められたチームが勝ち",
-  quantity: "制限時間内に何件でも提出。時間切れ後に数を比べる",
-  quality: "1チーム1件。時間切れ後に1位を決める",
-};
-
-const MINUTE_OPTIONS = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60].filter((m) => m >= MIN_MISSION_MINUTES && m <= MAX_MISSION_MINUTES);
+import { MISSION_INFO, missionJudge, missionRule, teamNames } from "./derive";
+import { DISABLED, INK, LINE, SOFT, c1, c2, c3, pad2 } from "./theme";
+import { CloseButton, Modal } from "./ui";
 
 type Send = (message: ClientMessage) => boolean;
 
-// 1秒ごとに現在時刻を更新する（残り時間の表示用）
-function useNow(): number {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  return now;
-}
+const LIMITS = [3, 5, 10];
 
-// 共有カードの特別ミッション。GM / 操作主は発生・判定、プレイヤーは提出・投票を行う
-export function MissionPanel({ room, you, send }: { room: RoomState; you: Participant; send: Send }) {
-  const now = useNow();
-  const active = room.missions.filter((m) => m.status !== "done");
-  const done = room.missions.filter((m) => m.status === "done").reverse();
-
-  return (
-    <section>
-      <h2>特別ミッション</h2>
-      {isModerator(you) && <StartMissionForm room={room} send={send} />}
-      {active.length === 0 ? (
-        <p className="hint">実施中の特別ミッションはありません</p>
-      ) : (
-        active.map((m) => <MissionCard key={m.id} room={room} you={you} mission={m} now={now} send={send} />)
-      )}
-      {done.length > 0 && (
-        <details>
-          <summary>終わった特別ミッション（{done.length}件）</summary>
-          {done.map((m) => (
-            <MissionCard key={m.id} room={room} you={you} mission={m} now={now} send={send} />
-          ))}
-        </details>
-      )}
-    </section>
-  );
-}
-
-function StartMissionForm({ room, send }: { room: RoomState; send: Send }) {
-  const busy = new Set(room.missions.filter((m) => m.status !== "done").map((m) => m.kind));
-  const available = MISSION_KINDS.filter((k) => !busy.has(k));
-  const [kind, setKind] = useState<MissionKind>("speed");
-  const [title, setTitle] = useState("");
-  const [minutes, setMinutes] = useState(5);
-  const selected = available.includes(kind) ? kind : available[0];
-  const normalized = normalizeMissionTitle(title);
-
-  if (!selected) return <p className="hint">3タイプとも実施中です</p>;
-  return (
-    <form
-      className="mission-start"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (normalized && send({ type: "startMission", kind: selected, title: normalized, minutes })) setTitle("");
-      }}
-    >
-      <div className="row-actions">
-        <label>
-          タイプ{" "}
-          <select value={selected} onChange={(e) => setKind(MISSION_KINDS.find((k) => k === e.target.value) ?? "speed")}>
-            {available.map((k) => (
-              <option key={k} value={k}>
-                {MISSION_KIND_LABEL[k]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          制限時間{" "}
-          <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
-            {MINUTE_OPTIONS.map((m) => (
-              <option key={m} value={m}>
-                {m}分
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <p className="hint">{KIND_HINT[selected]}</p>
-      <input
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        maxLength={MAX_MISSION_TITLE_LENGTH}
-        placeholder="お題（例：一番早く赤い車を撮る）"
-        aria-label="特別ミッションのお題"
-      />
-      <button type="submit" className="primary" disabled={!normalized}>
-        特別ミッションを発生させる
-      </button>
-    </form>
-  );
-}
-
-function MissionCard({ room, you, mission: m, now, send }: { room: RoomState; you: Participant; mission: Mission; now: number; send: Send }) {
+// 実施中の特別ミッションのバナー（カード上部の濃色）。1つのミッションにつき1本
+export function MissionBanner({
+  room,
+  you,
+  mission: m,
+  now,
+  send,
+  onSubmit,
+  onJudge,
+}: {
+  room: RoomState;
+  you: Participant;
+  mission: Mission;
+  now: number;
+  send: Send;
+  onSubmit: () => void;
+  onJudge: () => void;
+}) {
   const remaining = Math.max(0, m.endsAt - now);
-  const mySubs = m.submissions.filter((s) => s.teamId === you.teamId);
-  const canSubmit =
-    you.teamId !== null &&
-    m.status === "open" &&
-    remaining > 0 &&
-    !(m.kind === "speed" && mySubs.some((s) => s.status === "pending")) &&
-    !(m.kind === "quality" && mySubs.length > 0);
+  const open = m.status === "open" && remaining > 0;
+  const mine = m.submissions.filter((s) => s.teamId === you.teamId);
+  const isPlayer = you.teamId !== null;
+  const moderator = isModerator(you);
+  const sec = Math.ceil(remaining / 1000);
 
-  return (
-    <article className={`mission ${m.status}`}>
-      <p className="mission-head">
-        <span className="tag">{MISSION_KIND_LABEL[m.kind]}</span> <strong>{m.title}</strong>
-      </p>
-      <p className="hint">{statusText(m, remaining, room.settings.hasGm)}</p>
+  let remainText = `残り ${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`;
+  if (!open) remainText = m.status === "voting" ? "投票受付中" : "時間切れ · 判定待ち";
 
-      {m.status === "done" && <MissionResultView room={room} mission={m} />}
-
-      {m.submissions.length > 0 && (
-        <ul className="mission-subs">
-          {m.submissions.map((s) => (
-            <li key={s.id}>
-              <time>{formatTime(s.createdAt)}</time> <TeamName team={room.teams[s.teamId]} /> {s.participantName}
-              {s.comment && `：${s.comment}`}
-              <Thumbs roomCode={room.code} imageIds={s.imageIds} deleted={room.imagesDeletedAt !== null} />
-              {s.status === "pending" && <span className="tag">確認待ち</span>}
-              {s.status === "rejected" && <span className="error">（却下：{s.rejectComment}）</span>}
-              {s.status === "approved" && <strong>（許可）</strong>}
-              {you.role === "gm" && s.status === "pending" && <JudgeSubmission submissionId={s.id} send={send} />}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {canSubmit && (
-        <ApplyForm
-          key={m.submissions.length}
-          roomCode={room.code}
-          imageRequired={m.kind === "quality"}
-          maxImages={maxImagesFor(m.kind)}
-          submitLabel="提出する"
-          onSubmit={(comment, imageIds) => send({ type: "submitMission", missionId: m.id, comment, imageIds })}
-        />
-      )}
-      {isModerator(you) && m.status === "judging" && m.kind === "quantity" && <ScoreForm room={room} mission={m} send={send} />}
-      {isModerator(you) && m.status === "judging" && m.kind === "quality" && <PickWinnersForm room={room} mission={m} send={send} />}
-      {m.status === "voting" && <VoteForm room={room} you={you} mission={m} send={send} />}
-    </article>
-  );
-}
-
-function statusText(m: Mission, remaining: number, hasGm: boolean): string {
-  switch (m.status) {
-    case "open": {
-      if (remaining > 0) {
-        const sec = Math.ceil(remaining / 1000);
-        return `残り ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
-      }
-      return hasGm ? "時間切れ（時間内の提出を GM が確認中）" : "時間切れ";
-    }
-    case "judging":
-      return "時間切れ。判定待ちです";
-    case "voting":
-      return "時間切れ。投票を受け付けています";
-    case "done":
-      return "終了";
-  }
-}
-
-function MissionResultView({ room, mission: m }: { room: RoomState; mission: Mission }) {
-  return (
-    <>
-      <p>
-        1位：
-        {m.winnerTeamIds.length === 0
-          ? "なし"
-          : m.winnerTeamIds.map((id, i) => (
-              <span key={id}>
-                {i > 0 && "・"}
-                <TeamName team={room.teams[id]} />
-              </span>
-            ))}
-      </p>
-      {m.scores && (
-        <p className="hint">
-          {m.kind === "quality" ? "得票" : "数"}：
-          {m.scores.map((s) => `${room.teams[s.teamId]?.name ?? "?"} ${s.value}`).join(" / ")}
-        </p>
-      )}
-    </>
-  );
-}
-
-function JudgeSubmission({ submissionId, send }: { submissionId: number; send: Send }) {
-  const [rejecting, setRejecting] = useState(false);
-  const [comment, setComment] = useState("");
-  const normalized = normalizeComment(comment);
-  if (!rejecting) {
-    return (
-      <span className="row-actions inline">
-        <button type="button" className="primary" onClick={() => send({ type: "approveMission", submissionId })}>
-          許可
-        </button>
-        <button type="button" onClick={() => setRejecting(true)}>
-          却下
-        </button>
-      </span>
-    );
-  }
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (normalized) send({ type: "rejectMission", submissionId, comment: normalized });
-      }}
-    >
-      <input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={MAX_COMMENT_LENGTH} placeholder="却下の理由（必須）" aria-label="却下の理由" />
-      <div className="row-actions">
-        <button type="submit" className="danger" disabled={!normalized}>
-          却下する
-        </button>
-        <button type="button" onClick={() => setRejecting(false)}>
-          やめる
-        </button>
-      </div>
-    </form>
-  );
-}
-
-// 量：提出を見て各チームの数を入力する。初期値は提出件数
-function ScoreForm({ room, mission: m, send }: { room: RoomState; mission: Mission; send: Send }) {
-  const [values, setValues] = useState<Record<number, string>>(() =>
-    Object.fromEntries(room.teams.map((t) => [t.id, String(m.submissions.filter((s) => s.teamId === t.id).length)])),
-  );
-  const scores = room.teams.map((t) => ({ teamId: t.id, value: Number(values[t.id]) }));
-  const valid = scores.every((s) => Number.isInteger(s.value) && s.value >= 0 && s.value <= MAX_MISSION_SCORE);
-  return (
-    <form
-      className="judge"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (valid) send({ type: "scoreMission", missionId: m.id, scores });
-      }}
-    >
-      <p>各チームの数を入力してください（初期値は提出件数）</p>
-      {room.teams.map((t) => (
-        <label key={t.id} className="score-row">
-          <TeamName team={t} />
-          <input
-            type="number"
-            min={0}
-            max={MAX_MISSION_SCORE}
-            value={values[t.id] ?? "0"}
-            onChange={(e) => setValues((prev) => ({ ...prev, [t.id]: e.target.value }))}
-          />
-        </label>
-      ))}
-      <button type="submit" className="primary" disabled={!valid}>
-        この数で判定する
-      </button>
-    </form>
-  );
-}
-
-// 質：提出したチームから1位を選ぶ（複数選ぶと同率1位）
-function PickWinnersForm({ room, mission: m, send }: { room: RoomState; mission: Mission; send: Send }) {
-  const [picked, setPicked] = useState<number[]>([]);
-  const teams = [...new Set(m.submissions.map((s) => s.teamId))];
-  return (
-    <form
-      className="judge"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (picked.length > 0) send({ type: "pickWinners", missionId: m.id, teamIds: picked });
-      }}
-    >
-      <p>1位のチームを選んでください（複数選ぶと同率1位）</p>
-      {teams.map((id) => (
-        <label key={id} className="check">
-          <input
-            type="checkbox"
-            checked={picked.includes(id)}
-            onChange={(e) => setPicked((prev) => (e.target.checked ? [...prev, id] : prev.filter((x) => x !== id)))}
-          />
-          <TeamName team={room.teams[id]} />
-        </label>
-      ))}
-      <button type="submit" className="primary" disabled={picked.length === 0}>
-        1位を決める
-      </button>
-    </form>
-  );
-}
-
-// 質（全員投票）：1人1票、自チームには入れられない
-function VoteForm({ room, you, mission: m, send }: { room: RoomState; you: Participant; mission: Mission; send: Send }) {
-  const [choice, setChoice] = useState<number | null>(null);
+  const canSubmit = isPlayer && open && !(m.kind === "speed" && mine.some((s) => s.status === "pending")) && !(m.kind === "quality" && mine.length > 0);
+  const submitted = isPlayer && open && !canSubmit;
   const voted = m.voterIds.includes(you.id);
-  const voters = room.participants.filter((p) => p.teamId !== null).length;
-  const candidates = [...new Set(m.submissions.map((s) => s.teamId))].filter((id) => id !== you.teamId);
 
   return (
-    <div className="judge">
-      <p>
-        投票済み {m.voterIds.length} / {voters} 人
-      </p>
-      {voted ? (
-        <p>投票しました</p>
-      ) : you.teamId === null ? null : candidates.length === 0 ? (
-        <p className="hint">投票できるチームがありません</p>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (choice !== null) send({ type: "vote", missionId: m.id, teamId: choice });
-          }}
-        >
-          {candidates.map((id) => (
-            <label key={id} className="check">
-              <input type="radio" name={`vote-${m.id}`} checked={choice === id} onChange={() => setChoice(id)} />
-              <TeamName team={room.teams[id]} />
-            </label>
-          ))}
-          <button type="submit" className="primary" disabled={choice === null}>
+    <div className="banner-dark">
+      <div className="info">
+        <div className="line">
+          <span className="sp-label">特別ミッション · {MISSION_INFO[m.kind].label}</span>
+          <span className="remain">{remainText}</span>
+        </div>
+        <div className="title">{m.title}</div>
+        <div className="rule">{missionRule(m.kind, room.settings.hasGm)} · 1位のチームは他チームのマスを1つ奪えます</div>
+      </div>
+      <div className="actions">
+        {canSubmit && (
+          <button type="button" className="light-btn" onClick={onSubmit}>
+            {m.kind === "speed" ? "提出する" : "写真を提出"}
+          </button>
+        )}
+        {submitted && <span className="done-text">{m.kind === "speed" ? "確認待ち" : "提出済み"}</span>}
+        {m.status === "voting" && isPlayer && !voted && (
+          <button type="button" className="light-btn" onClick={onJudge}>
             投票する
           </button>
-        </form>
+        )}
+        {m.status === "voting" && voted && <span className="done-text">投票済み</span>}
+        {moderator && open && (
+          <button type="button" className="ghost-btn" onClick={() => send({ type: "closeMission", missionId: m.id })}>
+            締め切って判定
+          </button>
+        )}
+        {moderator && m.status === "judging" && (
+          <button type="button" className="light-btn" onClick={onJudge}>
+            判定する
+          </button>
+        )}
+        {moderator && m.status === "voting" && (
+          <button type="button" className="ghost-btn" onClick={() => send({ type: "closeVoting", missionId: m.id })}>
+            投票を締め切る
+          </button>
+        )}
+        {moderator && m.kind === "speed" && m.status === "open" && !open && <span className="done-text">承認待ちで確認してください</span>}
+      </div>
+    </div>
+  );
+}
+
+// 1位のチームが奪うマスを選んでいる間のバナー（チームカラー）
+export function StealBanner({ room, teamId, count, mine }: { room: RoomState; teamId: number; count: number; mine: boolean }) {
+  const team = room.teams[teamId];
+  if (!team) return null;
+  return (
+    <div className="steal-banner" style={{ background: c1(team.hue) }}>
+      <b>{team.name}が奪うマスを選択中</b>
+      <span>
+        {mine ? "点線のマスをタップ。ビンゴ成立ラインのマスも奪えます。" : "1位のチームが他チームのマスを1つ奪います。"}
+        {count > 1 ? `（あと${count}マス）` : ""}
+      </span>
+    </div>
+  );
+}
+
+export function MissionSetupModal({ room, send, onClose }: { room: RoomState; send: Send; onClose: () => void }) {
+  const busy = new Set(room.missions.filter((m) => m.status !== "done").map((m) => m.kind));
+  const [kind, setKind] = useState<MissionKind>(MISSION_KINDS.find((k) => !busy.has(k)) ?? "speed");
+  const [title, setTitle] = useState("");
+  const [limit, setLimit] = useState(5);
+  const normalized = normalizeMissionTitle(title);
+  const ok = normalized !== null && !busy.has(kind);
+
+  return (
+    <Modal onClose={onClose} label="特別ミッションを発生させる">
+      <div className="modal-head">
+        <div className="stack">
+          <span className="modal-title">特別ミッションを発生させる</span>
+          <span className="hint">1位のチームが他チームのマスを1つ奪えます</span>
+        </div>
+        <CloseButton onClick={onClose} />
+      </div>
+      <div className="type-cards">
+        {MISSION_KINDS.map((k) => (
+          <button key={k} type="button" className={kind === k ? "on" : undefined} disabled={busy.has(k)} onClick={() => setKind(k)}>
+            <b>{MISSION_INFO[k].label}</b>
+            <span>{busy.has(k) ? "実施中" : MISSION_INFO[k].ex}</span>
+          </button>
+        ))}
+      </div>
+      <div className="field">
+        <span className="label" style={{ fontSize: 12 }}>
+          お題
+        </span>
+        <input
+          className="input"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          maxLength={MAX_MISSION_TITLE_LENGTH}
+          placeholder={`例：${MISSION_INFO[kind].placeholder}`}
+          aria-label="特別ミッションのお題"
+        />
+        <span className="hint">判定：{missionRule(kind, room.settings.hasGm)}</span>
+      </div>
+      <div className="field">
+        <span className="label" style={{ fontSize: 12 }}>
+          制限時間
+        </span>
+        <div className="limit-pills">
+          {LIMITS.map((m) => (
+            <button key={m} type="button" className={limit === m ? "on" : undefined} onClick={() => setLimit(m)}>
+              {m}分
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="judge-by">判定者：{missionJudge(room, kind)}</div>
+      <button
+        type="button"
+        className={`btn primary lg${ok ? "" : " off"}`}
+        onClick={() => {
+          if (ok && normalized && send({ type: "startMission", kind, title: normalized, minutes: limit })) onClose();
+        }}
+      >
+        全員に発生させる
+      </button>
+    </Modal>
+  );
+}
+
+// 判定（量：数を入力 / 質：1位を選ぶ）と、全員投票
+export function MissionJudgeModal({
+  room,
+  you,
+  mission: m,
+  send,
+  onClose,
+}: {
+  room: RoomState;
+  you: Participant;
+  mission: Mission;
+  send: Send;
+  onClose: () => void;
+}) {
+  const voting = m.status === "voting";
+  const submittedTeams = [...new Set(m.submissions.map((s) => s.teamId))].sort((a, b) => a - b);
+  const rows = m.kind === "quantity" ? room.teams.map((t) => t.id) : submittedTeams;
+  const firstImage = (teamId: number) => m.submissions.find((s) => s.teamId === teamId && s.imageIds.length > 0)?.imageIds[0];
+  const imageCount = (teamId: number) => m.submissions.filter((s) => s.teamId === teamId).reduce((n, s) => n + Math.max(1, s.imageIds.length), 0);
+  const whoOf = (teamId: number) => [...new Set(m.submissions.filter((s) => s.teamId === teamId).map((s) => s.participantName))].join("・") || "提出なし";
+
+  const [counts, setCounts] = useState<Record<number, string>>(() => Object.fromEntries(room.teams.map((t) => [t.id, String(imageCount(t.id))])));
+  const [picked, setPicked] = useState<number[]>([]);
+  const [vote, setVote] = useState<number | null>(null);
+
+  const scores = room.teams.map((t) => ({ teamId: t.id, value: Number(counts[t.id]) }));
+  const scoresValid = scores.every((s) => Number.isInteger(s.value) && s.value >= 0 && s.value <= MAX_MISSION_SCORE);
+  const max = Math.max(0, ...scores.map((s) => (Number.isFinite(s.value) ? s.value : 0)));
+  const quantityWinners = max > 0 ? scores.filter((s) => s.value === max).map((s) => s.teamId) : [];
+
+  let winners: number[] = [];
+  let confirmLabel = "";
+  let onConfirm: (() => void) | null = null;
+  if (voting) {
+    confirmLabel = vote === null ? "投票してください" : `${room.teams[vote]?.name}に投票する`;
+    if (vote !== null) onConfirm = () => send({ type: "vote", missionId: m.id, teamId: vote }) && onClose();
+  } else if (m.kind === "quantity") {
+    winners = quantityWinners;
+    confirmLabel = winners.length ? `${teamNames(room, winners)}を1位で確定` : "1位なしで確定";
+    if (scoresValid) onConfirm = () => send({ type: "scoreMission", missionId: m.id, scores }) && onClose();
+  } else {
+    winners = picked;
+    confirmLabel = picked.length ? `${teamNames(room, picked)}を1位で確定` : "1位を選んでください";
+    if (picked.length) onConfirm = () => send({ type: "pickWinners", missionId: m.id, teamIds: picked }) && onClose();
+  }
+
+  const judgeBy = voting ? "全員投票（自チームは不可）" : room.settings.hasGm ? "GMが判定" : "操作主が判定";
+
+  return (
+    <Modal onClose={onClose} label="特別ミッションの判定">
+      <div className="modal-head">
+        <div className="stack">
+          <span className="sp-label">特別ミッション · {MISSION_INFO[m.kind].label}</span>
+          <span className="modal-title" style={{ fontSize: 18 }}>
+            {m.title}
+          </span>
+          <span className="hint">
+            {judgeBy} · {missionRule(m.kind, room.settings.hasGm)}
+          </span>
+        </div>
+        <CloseButton onClick={onClose} />
+      </div>
+      {voting && (
+        <div className="hint">
+          投票済み {m.voterIds.length} / {room.participants.filter((p) => p.teamId !== null).length} 人
+        </div>
       )}
-      {isModerator(you) && (
-        <button type="button" onClick={() => send({ type: "closeVoting", missionId: m.id })}>
-          投票を締め切る
+      <div className="judge-rows">
+        {rows.map((teamId) => {
+          const team = room.teams[teamId];
+          if (!team) return null;
+          const own = teamId === you.teamId;
+          const selected = voting ? vote === teamId : m.kind === "quantity" ? quantityWinners.includes(teamId) : picked.includes(teamId);
+          const img = firstImage(teamId);
+          const style = {
+            border: selected ? `2px solid ${c1(team.hue)}` : `1px solid ${LINE}`,
+            background: selected ? c2(team.hue) : voting && own ? SOFT : "#fff",
+          };
+          const content = (
+            <>
+              {m.kind !== "speed" && (img ? <img src={imageUrl(room.code, img)} alt="提出写真" /> : <span className="noimg" />)}
+              <span className="team-dot" style={{ width: 10, height: 10, borderRadius: 3, background: c1(team.hue) }} />
+              <span className="names">
+                <b>{team.name}</b>
+                <span>{whoOf(teamId)}</span>
+              </span>
+            </>
+          );
+          if (m.kind === "quantity" && !voting) {
+            return (
+              <label key={teamId} className="judge-row" style={style}>
+                {content}
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_MISSION_SCORE}
+                  value={counts[teamId] ?? "0"}
+                  onChange={(e) => setCounts((prev) => ({ ...prev, [teamId]: e.target.value }))}
+                  aria-label={`${team.name}の数`}
+                />
+                <span className="tag" style={{ color: c3(team.hue) }}>
+                  {selected ? "1位" : ""}
+                </span>
+              </label>
+            );
+          }
+          const tag = voting ? (own ? "自チーム" : selected ? "投票" : "") : selected ? "1位" : "";
+          return (
+            <button
+              key={teamId}
+              type="button"
+              className="judge-row"
+              style={style}
+              disabled={voting && own}
+              onClick={() => {
+                if (voting) setVote(teamId);
+                else setPicked((prev) => (prev.includes(teamId) ? prev.filter((x) => x !== teamId) : [...prev, teamId]));
+              }}
+            >
+              {content}
+              <span className="tag" style={{ color: voting && own ? "oklch(0.5 0.012 250)" : c3(team.hue) }}>
+                {tag}
+              </span>
+            </button>
+          );
+        })}
+        {rows.length === 0 && <div className="hint">提出したチームがありません</div>}
+      </div>
+      {winners.length > 1 && <div className="tie-note">同率：1位のチームすべてが1マスずつ奪えます</div>}
+      {!voting && m.kind === "quality" && <div className="hint">複数選ぶと同率1位になります</div>}
+      <button
+        type="button"
+        className="btn primary lg"
+        style={{ background: onConfirm ? INK : DISABLED }}
+        onClick={() => onConfirm?.()}
+      >
+        {confirmLabel}
+      </button>
+      {voting && isModerator(you) && (
+        <button type="button" className="btn" onClick={() => send({ type: "closeVoting", missionId: m.id }) && onClose()}>
+          投票を締め切って結果を出す
         </button>
       )}
-    </div>
+    </Modal>
   );
 }

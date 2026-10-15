@@ -213,6 +213,15 @@ export class Missions {
     return null;
   }
 
+  // 制限時間より前に締め切る。この後 advance で時間切れと同じ段階に進む
+  closeEarly(you: Participant, room: RoomState, missionId: number, now: number): string | null {
+    if (!isModerator(you)) return "締め切れるのは GM（GMなしのときは操作主）だけです";
+    const m = room.missions.find((x) => x.id === missionId);
+    if (!m || m.status !== "open" || m.endsAt <= now) return "締め切れる状態ではありません";
+    this.sql.exec("UPDATE missions SET ends_at = ? WHERE id = ?", now, m.id);
+    return null;
+  }
+
   approve(you: Participant, room: RoomState, submissionId: number, now: number): string | null {
     if (you.role !== "gm") return "許可できるのは GM だけです";
     const found = findSubmission(room, submissionId);

@@ -1,169 +1,147 @@
-import { useEffect, useState } from "react";
-import { MAX_COMMENT_LENGTH, maxImagesFor, normalizeComment, type RoomState } from "../shared/types";
-import { cellStatus } from "./cellStatus";
-import { ImagePicker } from "./Images";
-import { TeamName } from "./TeamBadge";
+import { useState } from "react";
+import { MAX_COMMENT_LENGTH, normalizeComment, type RoomState } from "../shared/types";
+import { cellLabel, lineCells, ownerAt, pendingAt, revokeReason, rowCol } from "./derive";
+import { INK, MUTED, SOFT, c2, c3 } from "./theme";
+import { CloseButton, Modal } from "./ui";
 
-// マスの詳細シート：タイトル・詳細・状態・達成申請（GM / 操作主には取り消しも出す）
+const QUICK_CANCEL = ["写真がお題と違っていました", "誤って許可しました", "ルール違反がありました"];
+
+// operator は GMなしの操作主（プレイヤーとして申請でき、取り消しもできる）
+export type SheetMode = "player" | "moderator" | "operator" | "readonly";
+
+// マスの詳細シート：タイトル・状態・詳細と、申請 / 取り消しの入口
 export function CellSheet({
   room,
   position,
   viewTeamId,
-  canApply,
-  canRevoke,
-  canSteal = false,
+  myTeamId,
+  mode,
   onApply,
   onRevoke,
-  onSteal,
   onClose,
 }: {
   room: RoomState;
   position: number;
-  viewTeamId: number | null; // どのチームのカードとして見ているか
-  canApply: boolean; // 自チームのカードを見ているプレイヤーだけ true
-  canRevoke: boolean; // GM / 操作主だけ true
-  canSteal?: boolean; // 自チームに未使用の奪取権があるとき true
-  onApply: (comment: string, imageIds: string[]) => void;
+  viewTeamId: number | null;
+  myTeamId: number | null;
+  mode: SheetMode;
+  onApply: () => void;
   onRevoke: (teamId: number, reason: string) => void;
-  onSteal?: () => void;
   onClose: () => void;
 }) {
+  const [canceling, setCanceling] = useState(false);
+  const [reason, setReason] = useState("");
   const cell = room.card[position];
-  const status = cellStatus(room, position, viewTeamId);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    addEventListener("keydown", onKey);
-    return () => removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   if (!cell) return null;
 
+  const shared = room.settings.cardMode === "shared";
+  const owner = cell.free ? null : ownerAt(room, position, viewTeamId);
+  const ownerTeam = owner !== null ? room.teams[owner] : undefined;
+  const inLine = owner !== null && lineCells(room, owner).has(position);
+  const plays = mode === "player" || mode === "operator";
+  const moderates = mode === "moderator" || mode === "operator";
+  const pending = mode === "readonly" || cell.free ? [] : pendingAt(room, position, viewTeamId);
+  const myPending = plays && pending.some((a) => a.teamId === myTeamId);
+  const cancelNote = owner === null && !cell.free ? revokeReason(room, position, viewTeamId) : null;
+  const viewTeam = viewTeamId !== null ? room.teams[viewTeamId] : undefined;
+
+  let status: string;
+  let pill: { bg: string; fg: string };
+  if (cell.free) {
+    status = "FREE · 最初から開いています";
+    pill = { bg: INK, fg: "#fff" };
+  } else if (ownerTeam) {
+    status = `${ownerTeam.name}が取得済み${inLine ? " · ビンゴライン" : ""}`;
+    pill = { bg: c2(ownerTeam.hue), fg: c3(ownerTeam.hue) };
+  } else if (pending.length > 0) {
+    status = pending.length > 1 ? `申請中 ×${pending.length}` : "申請中";
+    pill = { bg: SOFT, fg: INK };
+  } else {
+    status = "未取得";
+    pill = { bg: SOFT, fg: MUTED };
+  }
+
+  let note = "";
+  if (plays && shared && ownerTeam && owner !== myTeamId) note = "他チームが取得済みです。特別ミッションで1位になると奪えます";
+  if (mode === "moderator" && room.settings.hasGm && !ownerTeam && !cell.free) note = "GMはマスを申請できません。取得済みのマスは取り消しできます";
+
+  const canApply = plays && !cell.free && !ownerTeam && !myPending && (shared || viewTeamId === myTeamId);
+  const canCancel = moderates && ownerTeam !== undefined;
+  const normalizedReason = normalizeComment(reason);
+
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <section className="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="sheet-close link" onClick={onClose} aria-label="閉じる">
-          ✕
+    <Modal onClose={onClose} label="マスの詳細">
+      <div className="modal-head">
+        <div className="stack">
+          <span className="modal-kicker">
+            {shared ? "共有カード" : `${viewTeam?.name ?? ""}のカード`} · {rowCol(room, position)}
+          </span>
+          <span className="modal-title lg">{cellLabel(cell)}</span>
+        </div>
+        <CloseButton onClick={onClose} />
+      </div>
+      <div className="status-pills">
+        <span className="status-pill" style={{ background: pill.bg, color: pill.fg }}>
+          {status}
+        </span>
+        {!cell.free && cell.imageRequired && <span className="status-pill outline">画像必須</span>}
+      </div>
+      {!cell.free && cell.detail && <div className="detail-box">{cell.detail}</div>}
+      {cancelNote && (
+        <div className="cancel-note">
+          {room.settings.hasGm ? "GM" : "操作主"}が取得を取り消しました：{cancelNote}（再挑戦できます）
+        </div>
+      )}
+      {note && <div className="sheet-note">{note}</div>}
+
+      {canApply && (
+        <button type="button" className="btn primary lg" onClick={onApply}>
+          申請する
         </button>
-        <h2 id="sheet-title">{cell.free ? "FREE" : cell.title}</h2>
-        {!cell.free && cell.detail !== null && <p className="sheet-detail">{cell.detail}</p>}
-        {!cell.free && cell.imageRequired && <p className="tag">画像必須</p>}
+      )}
+      {myPending && <div className="waiting-box">GMの確認待ち</div>}
 
-        <p className="sheet-status">
-          状態：
-          {status.kind === "free" && "全チーム共通の達成済みマス"}
-          {status.kind === "open" && "未達成"}
-          {status.kind === "pending" && "申請中（GM の確認待ち）"}
-          {status.kind === "claimed" && (
-            <>
-              達成済み（<TeamName team={room.teams[status.teamId]} />）
-            </>
-          )}
-        </p>
-
-        {canApply && status.kind === "open" && !cell.free && (
-          <ApplyForm
-            roomCode={room.code}
-            imageRequired={cell.imageRequired}
-            submitLabel={room.settings.hasGm ? "達成申請" : "達成申請（すぐに取得）"}
-            onSubmit={onApply}
-          />
-        )}
-        {canSteal && onSteal && status.kind === "claimed" && status.teamId !== viewTeamId && (
-          <p>
-            <button type="button" className="primary" onClick={onSteal}>
-              このマスを奪う
-            </button>
-          </p>
-        )}
-        {canRevoke && status.kind === "claimed" && (
-          <CommentForm
-            label="取り消しの理由（必須）"
-            placeholder="取り消す理由を書いてください"
-            submitLabel="このマスを取り消す"
-            danger
-            onSubmit={(reason) => onRevoke(status.teamId, reason)}
-          />
-        )}
-      </section>
-    </div>
-  );
-}
-
-// 申請フォーム。コメントは必須、ただし画像を付けたら任意
-export function ApplyForm({
-  roomCode,
-  imageRequired,
-  maxImages = maxImagesFor("cell"),
-  submitLabel,
-  onSubmit,
-}: {
-  roomCode: string;
-  imageRequired: boolean;
-  maxImages?: number;
-  submitLabel: string;
-  onSubmit: (comment: string, imageIds: string[]) => void;
-}) {
-  const [comment, setComment] = useState("");
-  const [imageIds, setImageIds] = useState<string[]>([]);
-  const normalized = normalizeComment(comment);
-  const hasImage = imageIds.length > 0;
-  const commentOk = normalized !== null || (hasImage && comment.trim() === "");
-  const canSubmit = commentOk && (!imageRequired || hasImage);
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (canSubmit) onSubmit(normalized ?? "", imageIds);
-      }}
-    >
-      <ImagePicker roomCode={roomCode} max={maxImages} required={imageRequired} value={imageIds} onChange={setImageIds} />
-      <label className="field">
-        コメント（{hasImage ? "任意" : "必須"}）
-        <textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          maxLength={MAX_COMMENT_LENGTH}
-          rows={2}
-          placeholder="何をしたか書いてください"
-        />
-      </label>
-      <button type="submit" className="primary" disabled={!canSubmit}>
-        {submitLabel}
-      </button>
-    </form>
-  );
-}
-
-function CommentForm({
-  label,
-  placeholder,
-  submitLabel,
-  danger = false,
-  onSubmit,
-}: {
-  label: string;
-  placeholder: string;
-  submitLabel: string;
-  danger?: boolean;
-  onSubmit: (text: string) => void;
-}) {
-  const [text, setText] = useState("");
-  const normalized = normalizeComment(text);
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (normalized) onSubmit(normalized);
-      }}
-    >
-      <label className="field">
-        {label}
-        <textarea value={text} onChange={(e) => setText(e.target.value)} maxLength={MAX_COMMENT_LENGTH} rows={3} placeholder={placeholder} />
-      </label>
-      <button type="submit" className={danger ? "danger" : "primary"} disabled={!normalized}>
-        {submitLabel}
-      </button>
-    </form>
+      {canCancel &&
+        ownerTeam &&
+        (canceling ? (
+          <div className="cancel-form">
+            <div className="label" style={{ fontSize: 12 }}>
+              取り消し理由（必須・プレイヤーに表示されます）
+            </div>
+            <textarea
+              className="textarea"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={MAX_COMMENT_LENGTH}
+              placeholder="例：写真がお題と違っていました"
+              aria-label="取り消し理由"
+            />
+            <div className="quick">
+              {QUICK_CANCEL.map((q) => (
+                <button key={q} type="button" onClick={() => setReason(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+            <div className="hint">取り消し後、このマスは未取得に戻り再挑戦できます。</div>
+            <div className="two-buttons lg">
+              <button type="button" className="btn" onClick={() => setCanceling(false)}>
+                やめる
+              </button>
+              <button
+                type="button"
+                className={`btn danger${normalizedReason ? "" : " off"}`}
+                onClick={() => normalizedReason && onRevoke(ownerTeam.id, normalizedReason)}
+              >
+                取り消す
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="btn danger-outline" style={{ height: 46, borderRadius: 11 }} onClick={() => setCanceling(true)}>
+            このマスの取得を取り消す
+          </button>
+        ))}
+    </Modal>
   );
 }

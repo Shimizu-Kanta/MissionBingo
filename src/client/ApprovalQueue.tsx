@@ -1,93 +1,145 @@
 import { useState } from "react";
-import { MAX_COMMENT_LENGTH, normalizeComment, type Application, type RoomState } from "../shared/types";
-import { formatTime } from "./format";
-import { Thumbs } from "./Images";
-import { TeamName } from "./TeamBadge";
+import { MAX_COMMENT_LENGTH, imageUrl, normalizeComment, type ClientMessage, type RoomState } from "../shared/types";
+import { cellLabel } from "./derive";
+import { c1, formatClock } from "./theme";
 
-// GM の承認画面。申請時刻の古い順に、許可 / 却下（コメント必須）だけを置く
-export function ApprovalQueue({
-  room,
-  onApprove,
-  onReject,
-}: {
-  room: RoomState;
-  onApprove: (applicationId: number) => void;
-  onReject: (applicationId: number, comment: string) => void;
-}) {
+const QUICK_REJECT = ["写真がぼやけています", "お題と違うようです", "全員写っていません"];
+
+type QueueItem = {
+  key: string;
+  teamId: number;
+  who: string;
+  time: number;
+  target: string;
+  comment: string;
+  imageIds: string[];
+  conflictWith: string | null;
+  approve: ClientMessage;
+  reject: (comment: string) => ClientMessage;
+};
+
+// GM の承認待ち。通常マスの申請と、速さミッションの提出を申請時刻の古い順に並べる
+export function ApprovalQueue({ room, send }: { room: RoomState; send: (message: ClientMessage) => boolean }) {
+  const shared = room.settings.cardMode === "shared";
+  const items: QueueItem[] = [
+    ...room.applications.map((a) => {
+      const cell = room.card[a.position];
+      const earlier = shared ? room.applications.find((b) => b.id < a.id && b.position === a.position) : undefined;
+      return {
+        key: `a${a.id}`,
+        teamId: a.teamId,
+        who: a.participantName,
+        time: a.createdAt,
+        target: cell ? cellLabel(cell) : "?",
+        comment: a.comment,
+        imageIds: a.imageIds,
+        conflictWith: earlier ? earlier.participantName : null,
+        approve: { type: "approve", applicationId: a.id } satisfies ClientMessage,
+        reject: (comment: string): ClientMessage => ({ type: "reject", applicationId: a.id, comment }),
+      };
+    }),
+    ...room.missions.flatMap((m) =>
+      m.submissions
+        .filter((s) => s.status === "pending")
+        .map((s) => ({
+          key: `m${s.id}`,
+          teamId: s.teamId,
+          who: s.participantName,
+          time: s.createdAt,
+          target: `特別ミッション：${m.title}`,
+          comment: s.comment,
+          imageIds: s.imageIds,
+          conflictWith: null,
+          approve: { type: "approveMission", submissionId: s.id } satisfies ClientMessage,
+          reject: (comment: string): ClientMessage => ({ type: "rejectMission", submissionId: s.id, comment }),
+        })),
+    ),
+  ].sort((x, y) => x.time - y.time);
+
   return (
-    <section>
-      <h2>確認待ちの申請（{room.applications.length}件）</h2>
-      {room.applications.length === 0 ? (
-        <p className="hint">申請はありません</p>
-      ) : (
-        <ol className="queue">
-          {room.applications.map((app) => (
-            <ApprovalItem key={app.id} room={room} app={app} onApprove={onApprove} onReject={onReject} />
-          ))}
-        </ol>
-      )}
+    <section className="side-panel" aria-label="承認待ち">
+      <div className="head">
+        <b>承認待ち</b>
+        <span className="count-badge">{items.length}</span>
+      </div>
+      <div className="queue">
+        {items.length === 0 && <div className="empty">承認待ちの申請はありません</div>}
+        {items.map((item) => (
+          <QueueCard key={item.key} room={room} item={item} send={send} />
+        ))}
+      </div>
     </section>
   );
 }
 
-function ApprovalItem({
-  room,
-  app,
-  onApprove,
-  onReject,
-}: {
-  room: RoomState;
-  app: Application;
-  onApprove: (applicationId: number) => void;
-  onReject: (applicationId: number, comment: string) => void;
-}) {
+function QueueCard({ room, item, send }: { room: RoomState; item: QueueItem; send: (message: ClientMessage) => boolean }) {
   const [rejecting, setRejecting] = useState(false);
-  const [comment, setComment] = useState("");
-  const normalized = normalizeComment(comment);
-  const cell = room.card[app.position];
+  const [text, setText] = useState("");
+  const team = room.teams[item.teamId];
+  const normalized = normalizeComment(text);
+  const isImage = item.imageIds.length > 0;
 
   return (
-    <li className="queue-item">
-      <p className="queue-head">
-        <time>{formatTime(app.createdAt)}</time> <TeamName team={room.teams[app.teamId]} /> {app.participantName}
-      </p>
-      <p className="queue-cell">「{cell && !cell.free ? cell.title : "?"}」</p>
-      {app.comment && <p className="queue-comment">{app.comment}</p>}
-      <Thumbs roomCode={room.code} imageIds={app.imageIds} deleted={room.imagesDeletedAt !== null} />
+    <div className="q-item">
+      <div className="who">
+        <span>
+          <span className="team-dot" style={{ width: 9, height: 9, background: team ? c1(team.hue) : "transparent" }} />
+          <b>{item.who}</b>
+          <span className="team">{team?.name}</span>
+        </span>
+        <span className="time">{formatClock(item.time)}</span>
+      </div>
+      <div className="mission">
+        「{item.target}」<span> · {isImage ? "画像申請" : "チャット申請"}</span>
+      </div>
+      {isImage &&
+        (room.imagesDeletedAt !== null ? (
+          <span className="photo-gone">画像は削除されました</span>
+        ) : (
+          item.imageIds.map((id) => (
+            <a key={id} href={imageUrl(room.code, id)} target="_blank" rel="noreferrer">
+              <img className="photo" src={imageUrl(room.code, id)} alt="申請画像" />
+            </a>
+          ))
+        ))}
+      {item.comment && <div className="chat">{item.comment}</div>}
+      {item.conflictWith && <div className="conflict">同じマスに先着の申請あり（{item.conflictWith}）。先着から確認します</div>}
       {rejecting ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (normalized) onReject(app.id, normalized);
-          }}
-        >
-          <input
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
+        <div className="reject">
+          <textarea
+            className="textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
             maxLength={MAX_COMMENT_LENGTH}
-            placeholder="却下の理由（必須）"
+            placeholder="却下の理由（プレイヤーに表示されます）"
             aria-label="却下の理由"
-            autoFocus
           />
-          <div className="row-actions">
-            <button type="submit" className="danger" disabled={!normalized}>
-              却下する
+          <div className="quick">
+            {QUICK_REJECT.map((q) => (
+              <button key={q} type="button" onClick={() => setText(q)}>
+                {q}
+              </button>
+            ))}
+          </div>
+          <div className="two-buttons">
+            <button type="button" className="btn" onClick={() => setRejecting(false)}>
+              キャンセル
             </button>
-            <button type="button" onClick={() => setRejecting(false)}>
-              やめる
+            <button type="button" className={`btn danger${normalized ? "" : " off"}`} disabled={!normalized} onClick={() => normalized && send(item.reject(normalized))}>
+              却下して返す
             </button>
           </div>
-        </form>
+        </div>
       ) : (
-        <div className="row-actions">
-          <button type="button" className="primary" onClick={() => onApprove(app.id)}>
-            許可
-          </button>
-          <button type="button" onClick={() => setRejecting(true)}>
+        <div className="two-buttons">
+          <button type="button" className="btn" onClick={() => setRejecting(true)}>
             却下
+          </button>
+          <button type="button" className="btn primary" onClick={() => send(item.approve)}>
+            許可
           </button>
         </div>
       )}
-    </li>
+    </div>
   );
 }

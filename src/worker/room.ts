@@ -107,6 +107,10 @@ export class RoomDO extends DurableObject<Env> {
         claimed_at INTEGER NOT NULL,
         PRIMARY KEY (team_id, position)
       );
+      CREATE TABLE IF NOT EXISTS game_start (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        started_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS game_status (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         ended_at INTEGER NOT NULL
@@ -265,8 +269,10 @@ export class RoomDO extends DurableObject<Env> {
     const you = this.findParticipantByToken(token);
     if (message.type === "join") return this.join(token, you, room, message.name, message.teamId);
     if (!you) return "ルームに参加していません";
-    // 終了後はゲーム状態を変える操作を一切受け付けない
+    // 終了後はゲーム状態を変える操作を一切受け付けない。開始前（ロビー）は開始だけ受け付ける
     if (room.endedAt !== null) return "ゲームは終了しています";
+    if (message.type === "start") return this.start(you, room);
+    if (room.startedAt === null) return "ゲームはまだ始まっていません";
     switch (message.type) {
       case "apply":
         return this.apply(you, room, message.position, message.comment, message.imageIds);
@@ -296,7 +302,24 @@ export class RoomDO extends DurableObject<Env> {
         return this.missions.closeVoting(you, room, message.missionId, Date.now());
       case "steal":
         return this.missions.steal(you, room, message.rightId, message.position, titleAt(room, message.position), Date.now());
+      case "closeMission": {
+        const failure = this.missions.closeEarly(you, room, message.missionId, Date.now());
+        if (failure) return failure;
+        // 締め切ったら、そのまま時間切れと同じ段階へ進める
+        const latest = this.loadRoom();
+        if (latest) this.missions.advance(latest, Date.now());
+        return null;
+      }
     }
+  }
+
+  private start(you: Participant, room: RoomState): string | null {
+    if (!isModerator(you)) return "ゲームを開始できるのは GM（GMなしのときは操作主）だけです";
+    if (room.startedAt !== null) return "ゲームはすでに始まっています";
+    const now = Date.now();
+    this.ctx.storage.sql.exec("INSERT INTO game_start (id, started_at) VALUES (1, ?)", now);
+    this.addTimeline(now, { kind: "started", byName: you.name });
+    return null;
   }
 
   private join(token: string, you: Participant | null, room: RoomState, name: string, teamId: number): string | null {
@@ -360,7 +383,14 @@ export class RoomDO extends DurableObject<Env> {
     this.resolveApplication(app.id, "approved", null, now);
     this.insertClaim(app.teamId, app.position, now);
     markApproved(this.ctx.storage.sql, app.teamId, app.imageIds, app.position);
-    this.addTimeline(now, { kind: "approved", teamId: app.teamId, position: app.position, title, byName: you.name });
+    this.addTimeline(now, {
+      kind: "approved",
+      teamId: app.teamId,
+      position: app.position,
+      title,
+      byName: you.name,
+      participantName: app.participantName,
+    });
 
     // 共有カードでは、同じマスへの他チームの申請は却下扱いにする
     if (shared) {
@@ -374,6 +404,7 @@ export class RoomDO extends DurableObject<Env> {
           title,
           comment: AUTO_REJECT_COMMENT,
           auto: true,
+          participantName: other.participantName,
         });
       }
     }
@@ -393,6 +424,7 @@ export class RoomDO extends DurableObject<Env> {
       title: titleAt(room, app.position),
       comment,
       auto: false,
+      participantName: app.participantName,
     });
     return null;
   }
@@ -488,12 +520,18 @@ export class RoomDO extends DurableObject<Env> {
       claims: this.loadClaims(),
       applications: this.loadPendingApplications(),
       timeline: this.loadTimeline(),
+      startedAt: this.loadStartedAt(),
       endedAt: this.loadEndedAt(),
       missions: this.missions.load(),
       stealRights: this.missions.loadStealRights(),
       resultImages: loadResultImages(this.ctx.storage.sql),
       imagesDeletedAt: loadImagesDeletedAt(this.ctx.storage.sql),
     };
+  }
+
+  private loadStartedAt(): number | null {
+    const row = this.ctx.storage.sql.exec<{ started_at: number }>("SELECT started_at FROM game_start WHERE id = 1").toArray()[0];
+    return row ? row.started_at : null;
   }
 
   private loadEndedAt(): number | null {
@@ -572,7 +610,7 @@ export class RoomDO extends DurableObject<Env> {
   private sendState(ws: WebSocket, room: RoomState): void {
     const token = this.tokenOf(ws);
     const you = token ? this.findParticipantByToken(token) : null;
-    this.send(ws, { type: "state", room, you });
+    this.send(ws, { type: "state", room: visibleRoom(room, you), you });
   }
 
   // 参加者ごとに `you` が違うので、ソケットごとに送る
@@ -584,7 +622,8 @@ export class RoomDO extends DurableObject<Env> {
       const token = this.tokenOf(ws);
       if (!token) continue; // hello 前の接続には送らない
       try {
-        this.send(ws, { type: "state", room, you: byToken.get(token) ?? null });
+        const you = byToken.get(token) ?? null;
+        this.send(ws, { type: "state", room: visibleRoom(room, you), you });
       } catch {
         // 切断済みのソケットは webSocketClose で片付く
       }
@@ -612,6 +651,12 @@ function drawCard(settings: RoomSettings, tasks: TaskInput[]): Cell[] {
 export function storedImageIds(json: string): string[] {
   const value: unknown = JSON.parse(json);
   return parseImageIds(value) ?? [];
+}
+
+// 開始前（ロビー）は抽選済みのカードを GM にだけ見せる。プレイヤー（操作主を含む）に先に見せると不公平になる
+function visibleRoom(room: RoomState, you: Participant | null): RoomState {
+  if (room.startedAt !== null || you?.role === "gm") return room;
+  return { ...room, card: [] };
 }
 
 function titleAt(room: RoomState, position: number): string {

@@ -18,7 +18,8 @@ export function useRoom(code: string) {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [room, setRoom] = useState<RoomState | null>(null);
   const [you, setYou] = useState<Participant | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // 同じ理由のエラーが続いても毎回トーストを出せるよう、受け取るたびに新しいオブジェクトにする
+  const [error, setError] = useState<{ reason: string; at: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -46,10 +47,9 @@ export function useRoom(code: string) {
           case "state":
             setRoom(message.room);
             setYou(message.you);
-            setError(null);
             break;
           case "error":
-            setError(message.reason);
+            setError({ reason: message.reason, at: Date.now() });
             break;
         }
       });

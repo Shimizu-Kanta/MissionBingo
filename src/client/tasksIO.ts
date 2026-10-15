@@ -5,10 +5,16 @@ export type ImportResult = { tasks: TaskInput[]; errors: string[] };
 const FIELD_HINT = `タイトルは必須・${MAX_TITLE_LENGTH}文字以内、詳細は${MAX_DETAIL_LENGTH}文字以内です`;
 
 export function importTasks(fileName: string, text: string): ImportResult {
-  const body = text.replace(/^﻿/, "");
+  const body = text.replace(/^\uFEFF/, "");
   if (/\.json$/i.test(fileName)) return importJson(body);
   if (/\.csv$/i.test(fileName)) return importCsv(body);
   return { tasks: [], errors: ["CSV（.csv）か JSON（.json）のファイルを選んでください"] };
+}
+
+// 貼り付けたテキスト。先頭が [ か { なら JSON、それ以外は CSV として読む
+export function importTasksText(text: string): ImportResult {
+  const body = text.replace(/^\uFEFF/, "").trim();
+  return /^[[{]/.test(body) ? importJson(body) : importCsv(body);
 }
 
 function importJson(text: string): ImportResult {

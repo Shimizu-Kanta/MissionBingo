@@ -3,13 +3,15 @@ import { ROOM_CODE_PATTERN } from "../shared/types";
 import { CreateRoomPage } from "./CreateRoomPage";
 import { RoomPage, type RoomView } from "./RoomPage";
 import { TopPage } from "./TopPage";
+import { ToastProvider } from "./ui";
 
-// /room/:code はプレイ画面または結果画面、/room/:code/card は終了後の閲覧専用カード
+// /room/:code はロビー・プレイ・結果、/room/:code/card は閲覧専用カード、/room/:code/export は結果画像の出力
 function roomRouteFromPath(pathname: string): { code: string; view: RoomView } | null {
-  const match = /^\/room\/([^/]+)(\/card)?\/?$/.exec(pathname);
+  const match = /^\/room\/([^/]+)(?:\/(card|export))?\/?$/.exec(pathname);
   if (!match) return null;
-  const code = decodeURIComponent(match[1]).toUpperCase();
-  return ROOM_CODE_PATTERN.test(code) ? { code, view: match[2] ? "card" : "main" } : null;
+  const code = decodeURIComponent(match[1]).replace(/-/g, "").toUpperCase();
+  if (!ROOM_CODE_PATTERN.test(code)) return null;
+  return { code, view: match[2] === "card" ? "card" : match[2] === "export" ? "export" : "main" };
 }
 
 export function App() {
@@ -21,8 +23,22 @@ export function App() {
     return () => removeEventListener("popstate", onPopState);
   }, []);
 
-  if (pathname === "/create") return <CreateRoomPage />;
+  // 画面が変わったら先頭から見せる
+  useEffect(() => {
+    scrollTo(0, 0);
+  }, [pathname]);
+
   const route = roomRouteFromPath(pathname);
-  // key をルームコードにして、結果画面と閲覧カードの行き来では接続を張り直さない
-  return route ? <RoomPage key={route.code} code={route.code} view={route.view} /> : <TopPage />;
+  return (
+    <ToastProvider>
+      {pathname === "/create" ? (
+        <CreateRoomPage />
+      ) : route ? (
+        // key をルームコードにして、結果画面と閲覧カードの行き来では接続を張り直さない
+        <RoomPage key={route.code} code={route.code} view={route.view} />
+      ) : (
+        <TopPage />
+      )}
+    </ToastProvider>
+  );
 }
