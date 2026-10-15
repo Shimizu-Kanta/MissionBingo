@@ -2,13 +2,18 @@ import { DurableObject } from "cloudflare:workers";
 import {
   CLOSE_ROOM_NOT_FOUND,
   parseClientMessage,
+  parseSettings,
+  requiredTaskCount,
   teamsFor,
+  type Cell,
   type Participant,
   type Role,
   type RoomSettings,
   type RoomState,
   type ServerMessage,
+  type TaskInput,
 } from "../shared/types";
+import { shuffle } from "./random";
 
 // WebSocket に保存する情報（休止から復帰しても残る）
 type Attachment = { token: string };
@@ -16,6 +21,8 @@ type Attachment = { token: string };
 type Creator = { token: string; name: string; teamId: number | null };
 
 type ParticipantRow = { id: string; token: string; name: string; team_id: number | null; role: string };
+
+type CellRow = { position: number; free: number; title: string | null; detail: string | null; image_required: number };
 
 // 1ルーム = 1 RoomDO。ゲーム状態を変える処理はすべてここで行う。
 export class RoomDO extends DurableObject<Env> {
@@ -25,9 +32,15 @@ export class RoomDO extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS room (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         code TEXT NOT NULL,
-        has_gm INTEGER NOT NULL,
-        team_count INTEGER NOT NULL,
+        settings TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS cells (
+        position INTEGER PRIMARY KEY,
+        free INTEGER NOT NULL,
+        title TEXT,
+        detail TEXT,
+        image_required INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS participants (
         id TEXT PRIMARY KEY,
@@ -40,19 +53,30 @@ export class RoomDO extends DurableObject<Env> {
     `);
   }
 
-  // Worker から RPC で呼ぶ。すでに作成済みのルームなら false（コードの衝突）
-  initialize(code: string, settings: RoomSettings, creator: Creator): boolean {
+  // Worker から RPC で呼ぶ。すでに作成済みのルームなら false（コードの衝突）。
+  // 抽選はここで1回だけ行い、結果のカードを保存する
+  initialize(code: string, settings: RoomSettings, creator: Creator, tasks: TaskInput[]): boolean {
     if (this.loadRoom()) return false;
     const role: Role = settings.hasGm ? "gm" : "operator";
     const now = Date.now();
+    const card = drawCard(settings, tasks);
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        "INSERT INTO room (id, code, has_gm, team_count, created_at) VALUES (1, ?, ?, ?, ?)",
+        "INSERT INTO room (id, code, settings, created_at) VALUES (1, ?, ?, ?)",
         code,
-        settings.hasGm ? 1 : 0,
-        settings.teamCount,
+        JSON.stringify(settings),
         now,
       );
+      for (const cell of card) {
+        this.ctx.storage.sql.exec(
+          "INSERT INTO cells (position, free, title, detail, image_required) VALUES (?, ?, ?, ?, ?)",
+          cell.position,
+          cell.free ? 1 : 0,
+          cell.free ? null : cell.title,
+          cell.free ? null : cell.detail,
+          !cell.free && cell.imageRequired ? 1 : 0,
+        );
+      }
       this.insertParticipant(creator.token, creator.name, settings.hasGm ? null : creator.teamId, role, now);
     });
     return true;
@@ -137,17 +161,31 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private loadRoom(): RoomState | null {
-    const rows = this.ctx.storage.sql
-      .exec<{ code: string; has_gm: number; team_count: number }>("SELECT code, has_gm, team_count FROM room WHERE id = 1")
-      .toArray();
-    const row = rows[0];
+    const row = this.ctx.storage.sql
+      .exec<{ code: string; settings: string }>("SELECT code, settings FROM room WHERE id = 1")
+      .toArray()[0];
     if (!row) return null;
+    const stored: unknown = JSON.parse(row.settings);
+    const settings = parseSettings(stored);
+    if (!settings) throw new Error(`broken room settings: ${row.settings}`);
     return {
       code: row.code,
-      settings: { hasGm: row.has_gm === 1, teamCount: row.team_count },
-      teams: teamsFor(row.team_count),
+      settings,
+      teams: teamsFor(settings.teamCount),
       participants: this.participantRows().map(toParticipant),
+      card: this.loadCard(),
     };
+  }
+
+  private loadCard(): Cell[] {
+    return this.ctx.storage.sql
+      .exec<CellRow>("SELECT position, free, title, detail, image_required FROM cells ORDER BY position")
+      .toArray()
+      .map((r): Cell =>
+        r.free === 1
+          ? { position: r.position, free: true }
+          : { position: r.position, free: false, title: r.title ?? "", detail: r.detail, imageRequired: r.image_required === 1 },
+      );
   }
 
   private participantRows(): ParticipantRow[] {
@@ -194,6 +232,19 @@ export class RoomDO extends DurableObject<Env> {
   private send(ws: WebSocket, message: ServerMessage): void {
     ws.send(JSON.stringify(message));
   }
+}
+
+// 候補から必要数を抽選して並べる。FREE ありなら中央が FREE
+function drawCard(settings: RoomSettings, tasks: TaskInput[]): Cell[] {
+  const cellCount = settings.cardSize * settings.cardSize;
+  const center = (cellCount - 1) / 2;
+  const picked = shuffle(tasks).slice(0, requiredTaskCount(settings.cardSize, settings.free));
+  if (picked.length !== requiredTaskCount(settings.cardSize, settings.free)) throw new Error("not enough tasks");
+  let next = 0;
+  return Array.from({ length: cellCount }, (_, position): Cell => {
+    if (settings.free && position === center) return { position, free: true };
+    return { position, free: false, ...picked[next++] };
+  });
 }
 
 // token は他の参加者に見せないので、ここで落とす

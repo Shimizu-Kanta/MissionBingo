@@ -12,6 +12,16 @@ export const MAX_TEAMS = 6;
 export const DEFAULT_TEAMS = 3;
 export const MAX_NAME_LENGTH = 20;
 
+export const CARD_SIZES = [5, 7, 9] as const;
+export type CardSize = (typeof CARD_SIZES)[number];
+export const DEFAULT_CARD_SIZE: CardSize = 5;
+export const DEFAULT_TARGET_BINGO = 2;
+
+export const TITLE_WARN_LENGTH = 10;
+export const MAX_TITLE_LENGTH = 25;
+export const MAX_DETAIL_LENGTH = 500;
+export const MAX_TASKS = 300;
+
 // 見分けやすい色。チームID = 配列の添字
 export const TEAM_PRESETS = [
   { name: "赤チーム", color: "#e53935" },
@@ -27,10 +37,29 @@ export type Role = "gm" | "operator" | "player";
 
 export type Team = { id: number; name: string; color: string };
 
+export type CardMode = "individual" | "shared";
+
 export type RoomSettings = {
   hasGm: boolean;
+  cardMode: CardMode;
+  cardSize: CardSize;
+  free: boolean;
   teamCount: number;
+  targetBingo: number; // 1〜maxLines(cardSize)
+  autoEnd: boolean; // 共有カードのみ。個別カードでは常に false
 };
+
+// お題の候補（CSV / JSON の1行）
+export type TaskInput = {
+  title: string;
+  detail: string | null;
+  imageRequired: boolean;
+};
+
+// カード上の1マス。position は左上から行優先で 0 始まり
+export type Cell =
+  | { position: number; free: true }
+  | { position: number; free: false; title: string; detail: string | null; imageRequired: boolean };
 
 export type Participant = {
   id: string;
@@ -44,6 +73,7 @@ export type RoomState = {
   settings: RoomSettings;
   teams: Team[];
   participants: Participant[];
+  card: Cell[]; // 個別カードでも全チーム同じ並び
 };
 
 // POST /api/rooms
@@ -52,6 +82,7 @@ export type CreateRoomRequest = {
   name: string;
   settings: RoomSettings;
   teamId: number | null; // GMなしのときの操作主のチーム。GMありなら null
+  tasks: TaskInput[]; // 必要数以上。RoomDO がこの中から抽選する
 };
 export type CreateRoomResponse = { code: string };
 
@@ -70,6 +101,20 @@ export const CLOSE_ROOM_NOT_FOUND = 4404;
 
 export function teamsFor(teamCount: number): Team[] {
   return TEAM_PRESETS.slice(0, teamCount).map((t, id) => ({ id, ...t }));
+}
+
+// 縦・横・斜め2本
+export function maxLines(cardSize: CardSize): number {
+  return cardSize * 2 + 2;
+}
+
+export function requiredTaskCount(cardSize: CardSize, free: boolean): number {
+  return cardSize * cardSize - (free ? 1 : 0);
+}
+
+// サロゲートペアを1文字として数える
+export function charLength(value: string): number {
+  return [...value].length;
 }
 
 // ---- バリデーション ----
@@ -96,10 +141,51 @@ export function normalizeName(value: unknown): string | null {
   return name.length > 0 && name.length <= MAX_NAME_LENGTH ? name : null;
 }
 
-function parseSettings(value: unknown): RoomSettings | null {
+function parseCardSize(value: unknown): CardSize | null {
+  return CARD_SIZES.find((size) => size === value) ?? null;
+}
+
+export function parseSettings(value: unknown): RoomSettings | null {
   if (!isRecord(value)) return null;
-  if (typeof value.hasGm !== "boolean" || !isInt(value.teamCount, MIN_TEAMS, MAX_TEAMS)) return null;
-  return { hasGm: value.hasGm, teamCount: value.teamCount };
+  const { hasGm, cardMode, free, teamCount, targetBingo, autoEnd } = value;
+  const cardSize = parseCardSize(value.cardSize);
+  if (typeof hasGm !== "boolean" || typeof free !== "boolean" || typeof autoEnd !== "boolean" || !cardSize) return null;
+  if (cardMode !== "individual" && cardMode !== "shared") return null;
+  if (!isInt(teamCount, MIN_TEAMS, MAX_TEAMS) || !isInt(targetBingo, 1, maxLines(cardSize))) return null;
+  if (cardMode === "individual" && autoEnd) return null;
+  return { hasGm, cardMode, cardSize, free, teamCount, targetBingo, autoEnd };
+}
+
+export function normalizeTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const title = value.trim();
+  return title.length > 0 && charLength(title) <= MAX_TITLE_LENGTH ? title : null;
+}
+
+// 空文字の詳細は null として扱う
+export function normalizeDetail(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return undefined;
+  const detail = value.trim();
+  if (detail.length === 0) return null;
+  return charLength(detail) <= MAX_DETAIL_LENGTH ? detail : undefined;
+}
+
+export function parseTaskInput(value: unknown): TaskInput | null {
+  if (!isRecord(value)) return null;
+  const title = normalizeTitle(value.title);
+  const detail = normalizeDetail(value.detail);
+  const imageRequired = value.imageRequired ?? false;
+  if (!title || detail === undefined || typeof imageRequired !== "boolean") return null;
+  return { title, detail, imageRequired };
+}
+
+function parseCell(value: unknown): Cell | null {
+  if (!isRecord(value) || !isInt(value.position, 0, 80)) return null;
+  if (value.free === true) return { position: value.position, free: true };
+  const task = parseTaskInput(value);
+  if (value.free !== false || !task) return null;
+  return { position: value.position, free: false, ...task };
 }
 
 function parseRole(value: unknown): Role | null {
@@ -136,8 +222,9 @@ function parseRoomState(value: unknown): RoomState | null {
   const settings = parseSettings(value.settings);
   const teams = parseList(value.teams, parseTeam);
   const participants = parseList(value.participants, parseParticipant);
-  if (!settings || !teams || !participants) return null;
-  return { code: value.code, settings, teams, participants };
+  const card = parseList(value.card, parseCell);
+  if (!settings || !teams || !participants || !card) return null;
+  return { code: value.code, settings, teams, participants, card };
 }
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest | null {
@@ -145,12 +232,14 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest | null
   const name = normalizeName(value.name);
   const settings = parseSettings(value.settings);
   if (typeof value.token !== "string" || !TOKEN_PATTERN.test(value.token) || !name || !settings) return null;
+  const tasks = parseList(value.tasks, parseTaskInput);
+  if (!tasks || tasks.length < requiredTaskCount(settings.cardSize, settings.free) || tasks.length > MAX_TASKS) return null;
   if (settings.hasGm) {
     if (value.teamId !== null) return null;
-    return { token: value.token, name, settings, teamId: null };
+    return { token: value.token, name, settings, teamId: null, tasks };
   }
   if (!isInt(value.teamId, 0, settings.teamCount - 1)) return null;
-  return { token: value.token, name, settings, teamId: value.teamId };
+  return { token: value.token, name, settings, teamId: value.teamId, tasks };
 }
 
 export function parseCreateRoomResponse(value: unknown): CreateRoomResponse | null {

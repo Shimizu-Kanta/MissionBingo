@@ -6,6 +6,7 @@ import {
   parseCreateRoomRequest,
   type CreateRoomResponse,
 } from "../shared/types";
+import { randomInt } from "./random";
 
 export { RoomDO } from "./room";
 
@@ -23,11 +24,12 @@ app.post("/api/rooms", async (c) => {
   // コードが既存ルームと衝突したら作り直す
   for (let i = 0; i < MAX_CODE_ATTEMPTS; i++) {
     const code = generateRoomCode();
-    const created = await c.env.ROOM.getByName(code).initialize(code, req.settings, {
-      token: req.token,
-      name: req.name,
-      teamId: req.teamId,
-    });
+    const created = await c.env.ROOM.getByName(code).initialize(
+      code,
+      req.settings,
+      { token: req.token, name: req.name, teamId: req.teamId },
+      req.tasks,
+    );
     if (created) return c.json<CreateRoomResponse>({ code }, 201);
   }
   return c.json({ error: "ルームを作成できませんでした。もう一度お試しください" }, 503);
@@ -46,15 +48,8 @@ app.get("/api/rooms/:code/ws", async (c) => {
 });
 
 function generateRoomCode(): string {
-  const n = ROOM_CODE_ALPHABET.length;
-  // 偏りが出ないよう、n の倍数に収まらない値は捨てる
-  const limit = Math.floor(256 / n) * n;
   let code = "";
-  while (code.length < ROOM_CODE_LENGTH) {
-    for (const byte of crypto.getRandomValues(new Uint8Array(ROOM_CODE_LENGTH * 2))) {
-      if (byte < limit && code.length < ROOM_CODE_LENGTH) code += ROOM_CODE_ALPHABET[byte % n];
-    }
-  }
+  while (code.length < ROOM_CODE_LENGTH) code += ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)];
   return code;
 }
 

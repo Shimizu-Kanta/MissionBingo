@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { MAX_NAME_LENGTH, normalizeName, type Participant, type Role, type RoomState } from "../shared/types";
+import {
+  MAX_NAME_LENGTH,
+  normalizeName,
+  type Cell,
+  type Participant,
+  type Role,
+  type RoomSettings,
+  type RoomState,
+} from "../shared/types";
 import { navigate } from "./navigation";
 import { useRoom } from "./useRoom";
 
@@ -81,6 +89,7 @@ function Lobby({ room, you }: { room: RoomState; you: Participant }) {
         あなた：{you.name}（{ROLE_LABEL[you.role]}
         {myTeam && ` / ${myTeam.name}`}）
       </p>
+      <p className="hint">{describeSettings(room.settings)}</p>
       {gm && <p>GM：{gm.name}</p>}
       <ul>
         {room.teams.map((team) => (
@@ -100,7 +109,32 @@ function Lobby({ room, you }: { room: RoomState; you: Participant }) {
           </li>
         ))}
       </ul>
+      <CardGrid size={room.settings.cardSize} cells={room.card} />
     </>
+  );
+}
+
+function describeSettings(s: RoomSettings): string {
+  return [
+    s.hasGm ? "GMあり" : "GMなし",
+    s.cardMode === "individual" ? "個別カード" : "共有カード",
+    `${s.cardSize}×${s.cardSize}`,
+    s.free ? "FREEあり" : "FREEなし",
+    `目標 ${s.targetBingo} ビンゴ`,
+    ...(s.cardMode === "shared" ? [s.autoEnd ? "自動終了する" : "自動終了しない"] : []),
+  ].join(" ・ ");
+}
+
+// ステップ3の確認用：抽選結果のカードを表示する（タップ・状態表示はステップ4）
+function CardGrid({ size, cells }: { size: number; cells: Cell[] }) {
+  return (
+    <div className="card-grid" style={{ gridTemplateColumns: `repeat(${size}, 1fr)` }}>
+      {cells.map((cell) => (
+        <div key={cell.position} className={cell.free ? "cell free" : "cell"}>
+          {cell.free ? "FREE" : cell.title}
+        </div>
+      ))}
+    </div>
   );
 }
 

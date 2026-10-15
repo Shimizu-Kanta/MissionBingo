@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ROOM_CODE_PATTERN } from "../shared/types";
+import { CreateRoomPage } from "./CreateRoomPage";
 import { RoomPage } from "./RoomPage";
 import { TopPage } from "./TopPage";
 
@@ -19,6 +20,7 @@ export function App() {
     return () => removeEventListener("popstate", onPopState);
   }, []);
 
+  if (pathname === "/create") return <CreateRoomPage />;
   const code = roomCodeFromPath(pathname);
   return code ? <RoomPage key={code} code={code} /> : <TopPage />;
 }
