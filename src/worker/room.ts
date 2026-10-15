@@ -20,6 +20,7 @@ import {
   type TimelineEntry,
   type TimelineEvent,
 } from "../shared/types";
+import { computeStandings } from "../shared/game";
 import { shuffle } from "./random";
 
 // WebSocket に保存する情報（休止から復帰しても残る）
@@ -170,7 +171,11 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     // 状態を変える操作。失敗したら理由を本人にだけ返し、成功したら全員に配信する
-    const error = this.ctx.storage.transactionSync(() => this.handleAction(token, room, message));
+    const error = this.ctx.storage.transactionSync(() => {
+      const failure = this.handleAction(token, room, message);
+      if (!failure) this.endIfFinished();
+      return failure;
+    });
     if (error) {
       this.send(ws, { type: "error", reason: error });
       return;
@@ -301,10 +306,30 @@ export class RoomDO extends DurableObject<Env> {
 
   private end(you: Participant): string | null {
     if (!isModerator(you)) return "ゲームを終了できるのは GM（GMなしのときは操作主）だけです";
+    this.markEnded({ kind: "ended", reason: "manual", byName: you.name });
+    return null;
+  }
+
+  // 操作のたびに呼ぶ。目標ビンゴ数に届いたチームがいる、または（共有カード・自動終了ONで）全マスが埋まったら終了する
+  private endIfFinished(): void {
+    const room = this.loadRoom();
+    if (!room || room.endedAt !== null) return;
+    const { settings, card, claims, teams } = room;
+    const leader = computeStandings(settings.cardSize, card, claims, teams).find((s) => s.bingos >= settings.targetBingo);
+    if (leader) {
+      this.markEnded({ kind: "ended", reason: "target", teamId: leader.teamId });
+      return;
+    }
+    if (settings.cardMode === "shared" && settings.autoEnd) {
+      const claimed = new Set(claims.map((c) => c.position));
+      if (card.every((cell) => cell.free || claimed.has(cell.position))) this.markEnded({ kind: "ended", reason: "full" });
+    }
+  }
+
+  private markEnded(event: Extract<TimelineEvent, { kind: "ended" }>): void {
     const now = Date.now();
     this.ctx.storage.sql.exec("INSERT INTO game_status (id, ended_at) VALUES (1, ?)", now);
-    this.addTimeline(now, { kind: "ended", byName: you.name });
-    return null;
+    this.addTimeline(now, event);
   }
 
   private insertClaim(teamId: number, position: number, at: number): void {

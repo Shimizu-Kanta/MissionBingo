@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   MAX_NAME_LENGTH,
   isModerator,
@@ -14,15 +14,37 @@ import { Board } from "./Board";
 import { CellSheet } from "./CellSheet";
 import { MiniCard } from "./MiniCard";
 import { navigate } from "./navigation";
+import { ReadOnlyCards } from "./ReadOnlyCards";
+import { ResultView } from "./ResultView";
 import { Standings } from "./Standings";
 import { TeamBadge, TeamName } from "./TeamBadge";
+import { TeamTabs } from "./TeamTabs";
 import { Timeline } from "./Timeline";
 import { useRoom } from "./useRoom";
 
 const ROLE_LABEL: Record<Role, string> = { gm: "GM", operator: "操作主", player: "プレイヤー" };
 
-export function RoomPage({ code }: { code: string }) {
+export type RoomView = "main" | "card";
+
+function cameFromResult(state: unknown): boolean {
+  return typeof state === "object" && state !== null && "fromResult" in state && state.fromResult === true;
+}
+
+export function RoomPage({ code, view }: { code: string; view: RoomView }) {
   const { status, room, you, error, send } = useRoom(code);
+  const ended = room !== null && room.endedAt !== null;
+
+  // 閲覧専用カードは終了後だけ。プレイ中に開かれたらプレイ画面の URL に戻す
+  useEffect(() => {
+    if (room && !ended && view === "card") navigate(`/room/${code}`, { replace: true });
+  }, [room, ended, view, code]);
+
+  const showCards = () => navigate(`/room/${code}/card`, { state: { fromResult: true } });
+  // 結果画面から来たなら履歴を戻る（ブラウザの戻ると同じ動き）。直接開いた場合は結果画面へ置き換える
+  const backToResult = () => {
+    if (cameFromResult(history.state)) history.back();
+    else navigate(`/room/${code}`, { replace: true });
+  };
 
   if (status === "notFound") {
     return (
@@ -44,7 +66,13 @@ export function RoomPage({ code }: { code: string }) {
         </p>
       )}
       {room &&
-        (you ? (
+        (ended ? (
+          view === "card" ? (
+            <ReadOnlyCards room={room} you={you} onBack={backToResult} />
+          ) : (
+            <ResultView room={room} you={you} onShowCards={showCards} />
+          )
+        ) : you ? (
           <PlayView room={room} you={you} send={send} />
         ) : (
           <JoinForm room={room} onJoin={(name, teamId) => send({ type: "join", name, teamId })} />
@@ -94,7 +122,6 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
   const closeSheet = useCallback(() => setSelected(null), []);
   const myTeam = you.teamId !== null ? room.teams[you.teamId] : undefined;
   const moderator = isModerator(you);
-  const ended = room.endedAt !== null;
   const individual = room.settings.cardMode === "individual";
 
   // 個別カードで GM / 操作主はタブでチームを切り替える。プレイヤーは自チームのカードだけ
@@ -104,11 +131,6 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
 
   return (
     <>
-      {ended && (
-        <p className="banner" role="status">
-          ゲームは終了しました
-        </p>
-      )}
       <p>
         あなた：{you.name}（{ROLE_LABEL[you.role]}
         {myTeam && (
@@ -125,9 +147,9 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
 
       <Standings room={room} myTeamId={you.teamId} />
 
-      {moderator && !ended && <EndGameButton onEnd={() => send({ type: "end" })} />}
+      {moderator && <EndGameButton onEnd={() => send({ type: "end" })} />}
 
-      {you.role === "gm" && !ended && (
+      {you.role === "gm" && (
         <ApprovalQueue
           room={room}
           onApprove={(applicationId) => send({ type: "approve", applicationId })}
@@ -139,27 +161,13 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
         {individual && moderator ? (
           <>
             <h2>各チームのカード</h2>
-            <div className="tabs" role="tablist">
-              {room.teams.map((team) => (
-                <button
-                  key={team.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={team.id === tabTeamId}
-                  className={team.id === tabTeamId ? "tab active" : "tab"}
-                  onClick={() => setTabTeamId(team.id)}
-                >
-                  <TeamName team={team} />
-                  {team.id === you.teamId && "（自チーム）"}
-                </button>
-              ))}
-            </div>
+            <TeamTabs teams={room.teams} selected={tabTeamId} myTeamId={you.teamId} onSelect={setTabTeamId} />
           </>
         ) : (
           <h2>{individual && viewTeam ? `${viewTeam.name}のカード` : "共有カード"}</h2>
         )}
         <Board room={room} viewTeamId={viewTeamId} onSelect={setSelected} />
-        {moderator && !ended && <p className="hint">取得済みのマスをタップすると取り消せます</p>}
+        {moderator && <p className="hint">取得済みのマスをタップすると取り消せます</p>}
       </section>
 
       {individual && !moderator && (
@@ -187,8 +195,8 @@ function PlayView({ room, you, send }: { room: RoomState; you: Participant; send
           room={room}
           position={selected}
           viewTeamId={viewTeamId}
-          canApply={!ended && you.teamId !== null && viewTeamId === you.teamId}
-          canRevoke={!ended && moderator}
+          canApply={you.teamId !== null && viewTeamId === you.teamId}
+          canRevoke={moderator}
           onApply={(comment) => {
             if (send({ type: "apply", position: selected, comment })) closeSheet();
           }}

@@ -89,7 +89,9 @@ export type TimelineEvent =
   | { kind: "rejected"; teamId: number; position: number; title: string; comment: string; auto: boolean }
   | { kind: "claimed"; teamId: number; participantName: string; position: number; title: string; comment: string }
   | { kind: "revoked"; teamId: number; position: number; title: string; reason: string; byName: string }
-  | { kind: "ended"; byName: string };
+  | { kind: "ended"; reason: "manual"; byName: string } // GM / 操作主が終了
+  | { kind: "ended"; reason: "target"; teamId: number } // 目標ビンゴ数に到達
+  | { kind: "ended"; reason: "full" }; // 全マスが埋まった（共有カード・自動終了ON）
 export type TimelineEntry = { id: number; at: number; event: TimelineEvent };
 
 export type RoomState = {
@@ -255,7 +257,11 @@ function parseApplication(value: unknown): Application | null {
 
 function parseTimelineEvent(value: unknown): TimelineEvent | null {
   if (!isRecord(value)) return null;
-  if (value.kind === "ended") return typeof value.byName === "string" ? { kind: "ended", byName: value.byName } : null;
+  if (value.kind === "ended") {
+    if (value.reason === "target") return isTeamId(value.teamId) ? { kind: "ended", reason: "target", teamId: value.teamId } : null;
+    if (value.reason === "full") return { kind: "ended", reason: "full" };
+    return value.reason === "manual" && typeof value.byName === "string" ? { kind: "ended", reason: "manual", byName: value.byName } : null;
+  }
 
   const { teamId, position, title } = value;
   if (!isTeamId(teamId) || !isPosition(position) || typeof title !== "string") return null;

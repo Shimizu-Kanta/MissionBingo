@@ -25,8 +25,23 @@ export function Timeline({ room }: { room: RoomState }) {
   );
 }
 
+export function describeEnding(room: RoomState, event: Extract<TimelineEvent, { kind: "ended" }>): ReactNode {
+  switch (event.reason) {
+    case "manual":
+      return <>{event.byName} がゲームを終了しました</>;
+    case "target":
+      return (
+        <>
+          <TeamName team={room.teams[event.teamId]} /> が目標の {room.settings.targetBingo} ビンゴに到達し、ゲームが終了しました
+        </>
+      );
+    case "full":
+      return <>全マスが埋まったため、ゲームが終了しました</>;
+  }
+}
+
 function describe(room: RoomState, event: TimelineEvent): ReactNode {
-  if (event.kind === "ended") return <>{event.byName} がゲームを終了しました</>;
+  if (event.kind === "ended") return describeEnding(room, event);
   const team = <TeamName team={room.teams[event.teamId]} />;
   switch (event.kind) {
     case "revoked":
