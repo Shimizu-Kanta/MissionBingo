@@ -1,18 +1,48 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mission-bingo",
-  "main": "src/worker/index.ts",
-  "compatibility_date": "2026-10-01",
-  "assets": {
-    // SPA のルーティングはクライアント側で行い、/api/* だけ Worker に通す
-    "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
-  },
-  "durable_objects": {
-    "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }]
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
-  // 申請画像。ゲーム終了から24時間後に RoomDO が削除する（保険として、バケットにライフサイクルルール：アップロードから7日で削除）
-  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "mission-bingo-images" }],
-  "observability": { "enabled": true }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "mission-bingo",
+	"main": "src/worker/index.ts",
+	"compatibility_date": "2026-10-01",
+	"assets": {
+		// SPA のルーティングはクライアント側で行う。/api/* と、OGP を書き換える画面の HTML だけ Worker に通す
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*",
+			"/",
+			"/create",
+			"/room/*"
+		]
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "ROOM",
+				"class_name": "RoomDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"RoomDO"
+			]
+		}
+	],
+	// 申請画像。ゲーム終了から24時間後に RoomDO が削除する（保険として、バケットにライフサイクルルール：アップロードから7日で削除）
+	"r2_buckets": [
+		{
+			"binding": "IMAGES",
+			"bucket_name": "mission-bingo-images"
+		},
+		{
+			"bucket_name": "mission-bingo-images",
+			"binding": "mission_bingo_images",
+			"remote": true
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
 }

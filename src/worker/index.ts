@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   IMAGE_ID_PATTERN,
   MAX_UPLOAD_BYTES,
@@ -10,6 +10,7 @@ import {
   type CreateRoomResponse,
 } from "../shared/types";
 import { r2Key } from "./images";
+import { roomCodeFromPath, roomMeta, withOgp } from "./ogp";
 import { randomInt } from "./random";
 
 export { RoomDO } from "./room";
@@ -87,6 +88,20 @@ app.get("/api/rooms/:code/ws", async (c) => {
   }
   return c.env.ROOM.getByName(code).fetch(c.req.raw);
 });
+
+// 画面の HTML。リンクのプレビュー（OGP）を書き換えて返す。ルームの URL ならルームごとの内容にする
+const serveHtml = async (c: Context<{ Bindings: Env }>) => {
+  const url = new URL(c.req.url);
+  // 条件付きリクエストのヘッダーは渡さず、いつも本文を受け取る
+  const html = await c.env.ASSETS.fetch(new Request(url));
+  if (!html.ok || !html.headers.get("Content-Type")?.startsWith("text/html")) return html;
+  const code = roomCodeFromPath(url.pathname);
+  const preview = code ? await c.env.ROOM.getByName(code).preview() : null;
+  return withOgp(html, url, code && preview ? roomMeta(code, preview) : null);
+};
+app.get("/", serveHtml);
+app.get("/create", serveHtml);
+app.get("/room/*", serveHtml);
 
 function generateRoomCode(): string {
   let code = "";

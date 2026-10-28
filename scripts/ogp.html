@@ -1,0 +1,178 @@
+<!doctype html>
+<!--
+  OGP 画像（public/ogp.png、1200×630）の元データ。作り直すときは Chrome で書き出す：
+  chrome --headless --hide-scrollbars --force-device-scale-factor=1 --window-size=1200,630 \
+    --virtual-time-budget=5000 --screenshot=public/ogp.png scripts/ogp.html
+-->
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Noto+Sans+JP:wght@500;700&display=block"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: oklch(0.22 0.012 250);
+        --muted: oklch(0.5 0.012 250);
+        --text2: oklch(0.45 0.012 250);
+        --line: oklch(0.9 0.005 250);
+        --screen: oklch(0.975 0.003 250);
+        --mono: "JetBrains Mono", ui-monospace, monospace;
+        --sans: "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+      body {
+        background: var(--screen);
+        color: var(--ink);
+        font-family: var(--sans);
+        display: flex;
+        align-items: center;
+        gap: 56px;
+        padding: 0 80px;
+      }
+      .text {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 30px;
+        font-weight: 700;
+      }
+      .logo {
+        width: 52px;
+        height: 52px;
+        border-radius: 13px;
+        background: var(--ink);
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
+        padding: 11px;
+      }
+      .logo span {
+        background: #fff;
+      }
+      .logo span:nth-child(even) {
+        opacity: 0.35;
+      }
+      .kicker {
+        font: 500 22px/1 var(--mono);
+        color: var(--muted);
+      }
+      h1 {
+        margin: 0;
+        font-size: 52px;
+        font-weight: 700;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 500;
+        line-height: 1.7;
+        color: var(--text2);
+      }
+      .card {
+        flex: none;
+        width: 370px;
+        padding: 18px;
+        border-radius: 20px;
+        background: #fff;
+        border: 2px solid var(--line);
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+      }
+      .cell {
+        aspect-ratio: 1;
+        border-radius: 10px;
+        border: 2px solid var(--line);
+        background: #fff;
+      }
+      .cell.free {
+        display: grid;
+        place-items: center;
+        font: 500 14px/1 var(--mono);
+        color: var(--muted);
+      }
+      /* チームカラー：C1 ベタ / C2 淡色（src/client/theme.ts と同じ） */
+      .r {
+        background: oklch(0.6 0.15 25);
+        border-color: oklch(0.6 0.15 25);
+      }
+      .b {
+        background: oklch(0.6 0.15 250);
+        border-color: oklch(0.6 0.15 250);
+      }
+      .g {
+        background: oklch(0.6 0.15 150);
+        border-color: oklch(0.6 0.15 150);
+      }
+      .pending {
+        background: oklch(0.945 0.035 150);
+        border-color: oklch(0.85 0.06 150);
+        border-style: dashed;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="text">
+      <div class="brand">
+        <span class="logo"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>
+        ミッションビンゴ
+      </div>
+      <div class="kicker">身内で遊ぶ、オンライン対戦ビンゴ</div>
+      <h1>ミッションをこなして、<br />マスを開けよう。</h1>
+      <p>マスのお題を達成して申請、承認されたら開く。<br />先にビンゴを揃えたチームの勝ち。</p>
+    </div>
+    <!-- 共有カードで青チームが横1列を揃えた場面 -->
+    <div class="card">
+      <div class="cell r"></div>
+      <div class="cell"></div>
+      <div class="cell g"></div>
+      <div class="cell"></div>
+      <div class="cell r"></div>
+
+      <div class="cell"></div>
+      <div class="cell r"></div>
+      <div class="cell"></div>
+      <div class="cell pending"></div>
+      <div class="cell"></div>
+
+      <div class="cell b"></div>
+      <div class="cell b"></div>
+      <div class="cell b"></div>
+      <div class="cell b"></div>
+      <div class="cell b"></div>
+
+      <div class="cell g"></div>
+      <div class="cell"></div>
+      <div class="cell"></div>
+      <div class="cell r"></div>
+      <div class="cell"></div>
+
+      <div class="cell"></div>
+      <div class="cell g"></div>
+      <div class="cell"></div>
+      <div class="cell"></div>
+      <div class="cell b"></div>
+    </div>
+  </body>
+</html>

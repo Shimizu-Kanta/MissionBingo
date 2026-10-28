@@ -36,6 +36,7 @@ import {
   useUploads,
 } from "./images";
 import { MISSIONS_SCHEMA, Missions } from "./missions";
+import type { RoomPreview } from "./ogp";
 import { shuffle } from "./random";
 
 // WebSocket に保存する情報（休止から復帰しても残る）
@@ -164,6 +165,17 @@ export class RoomDO extends DurableObject<Env> {
       this.insertParticipant(creator.token, creator.name, settings.hasGm ? null : creator.teamId, role, now);
     });
     return true;
+  }
+
+  // Worker から RPC で呼ぶ。リンクのプレビュー（OGP）用。ルームがなければ null
+  preview(): RoomPreview | null {
+    const row = this.ctx.storage.sql.exec<{ settings: string }>("SELECT settings FROM room WHERE id = 1").toArray()[0];
+    if (!row) return null;
+    const stored: unknown = JSON.parse(row.settings);
+    const settings = parseSettings(stored);
+    if (!settings) return null;
+    const phase = this.loadEndedAt() !== null ? "ended" : this.loadStartedAt() !== null ? "playing" : "lobby";
+    return { settings, phase };
   }
 
   async fetch(request: Request): Promise<Response> {
